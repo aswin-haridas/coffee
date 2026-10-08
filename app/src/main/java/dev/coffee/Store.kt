@@ -2,6 +2,12 @@ package dev.coffee
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
+import android.net.Uri
+import android.util.Base64
 import android.util.AtomicFile
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -23,11 +29,12 @@ import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 
 const val DEFAULT_MODEL = "openrouter/free"
 
 /** Text is snapshot state so a streaming token only invalidates its own Text, not the whole list. */
-class Msg(val user: Boolean, text: String, err: Boolean = false) {
+class Msg(val user: Boolean, text: String, err: Boolean = false, val image: String? = null) {
     var text by mutableStateOf(text)
     var err by mutableStateOf(err)
 }
@@ -46,12 +53,14 @@ object Store {
     private val settings = mutableStateMapOf<String, String>()
     private lateinit var prefs: SharedPreferences
     private lateinit var file: AtomicFile
+    private lateinit var images: File
 
     fun init(ctx: Context) {
         if (::file.isInitialized) return
         prefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
         prefs.all.forEach { (k, v) -> settings[k] = v.toString() }
         file = AtomicFile(File(ctx.filesDir, "chats.json"))
+        images = File(ctx.filesDir, "images").apply { mkdirs() }
         // ponytail: whole history read on main thread at startup, move to IO if it ever grows past a few MB
         runCatching {
             val arr = JSONArray(String(file.readFully()))
@@ -60,7 +69,7 @@ object Store {
                 val m = c.getJSONArray("m")
                 chats += Chat(c.getLong("id"), c.getString("t"), List(m.length()) {
                     val o = m.getJSONObject(it)
-                    Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"))
+                    Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"), o.optString("i").ifEmpty { null })
                 })
             }
         }
@@ -74,12 +83,12 @@ object Store {
     // OpenRouter ids are "vendor/model"; anything else is a stale Claude/Gemini id from older versions
     val model get() = this["model"].takeIf { '/' in it } ?: DEFAULT_MODEL
 
-    fun send(text: String) {
-        val chat = current ?: Chat(System.currentTimeMillis(), text.take(60), emptyList()).also {
+    fun send(text: String, image: String? = null) {
+        val chat = current ?: Chat(System.currentTimeMillis(), text.ifBlank { "Image" }.take(60), emptyList()).also {
             chats.add(0, it)
             current = it
         }
-        chat.msgs += Msg(true, text)
+        chat.msgs += Msg(true, text, image = image)
         reply(chat)
     }
 
@@ -92,12 +101,13 @@ object Store {
 
     fun delete(chat: Chat) {
         chats.remove(chat)
+        chat.msgs.forEach { m -> m.image?.let { File(it).delete() } }
         if (current === chat) current = null
         save()
     }
 
     private fun reply(chat: Chat) {
-        val history = chat.msgs.filter { !it.err && it.text.isNotBlank() }.map { it.user to it.text }
+        val history = chat.msgs.filter { !it.err && (it.text.isNotBlank() || it.image != null) }.map { Turn(it.user, it.text, it.image) }
         val m = Msg(false, "")
         chat.msgs += m
         val (model, system) = model to this["system"]
@@ -120,7 +130,7 @@ object Store {
         val json = JSONArray().apply {
             chats.forEach { c ->
                 put(JSONObject().put("id", c.id).put("t", c.title).put("m", JSONArray().apply {
-                    c.msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err)) }
+                    c.msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err).put("i", it.image)) }
                 }))
             }
         }.toString()
@@ -134,7 +144,38 @@ object Store {
             }
         }
     }
+
+    /**
+     * Copies a picked image into app storage as a JPEG at most 1024px on the long side (upright per EXIF).
+     * Small enough for a fast upload and well within vision models' input limits. Call off the main thread.
+     */
+    fun saveImage(ctx: Context, uri: Uri): String? = runCatching {
+        val cr = ctx.contentResolver
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        cr.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 1024) sample *= 2
+        var bmp = cr.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) }!!
+        val scale = 1024f / maxOf(bmp.width, bmp.height)
+        val rotation = cr.openInputStream(uri)!!.use {
+            when (ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270
+                else -> 0
+            }
+        }
+        if (scale < 1f || rotation != 0) {
+            val m = Matrix().apply { if (scale < 1f) postScale(scale, scale); postRotate(rotation.toFloat()) }
+            bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+        }
+        val out = File(images, "${UUID.randomUUID()}.jpg")
+        out.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+        out.path
+    }.getOrNull()
 }
+
+class Turn(val user: Boolean, val text: String, val image: String?)
 
 object OpenRouter {
     private val url = URL("https://openrouter.ai/api/v1/chat/completions")
@@ -143,13 +184,20 @@ object OpenRouter {
      * Streams an OpenAI-style chat completion and emits the full accumulated reply.
      * Conflated so the UI renders at most one update per frame; cancelling disconnects the socket immediately.
      */
-    fun stream(model: String, system: String, history: List<Pair<Boolean, String>>) = callbackFlow {
+    fun stream(model: String, system: String, history: List<Turn>) = callbackFlow {
         val conn = url.openConnection() as HttpURLConnection
         launch(Dispatchers.IO) {
             try {
                 val messages = JSONArray()
                 if (system.isNotBlank()) messages.put(JSONObject().put("role", "system").put("content", system))
-                history.forEach { (user, text) -> messages.put(JSONObject().put("role", if (user) "user" else "assistant").put("content", text)) }
+                history.forEach { t ->
+                    val content: Any = if (t.image == null) t.text else JSONArray().apply {
+                        if (t.text.isNotBlank()) put(JSONObject().put("type", "text").put("text", t.text))
+                        val b64 = Base64.encodeToString(File(t.image).readBytes(), Base64.NO_WRAP)
+                        put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$b64")))
+                    }
+                    messages.put(JSONObject().put("role", if (t.user) "user" else "assistant").put("content", content))
+                }
                 conn.requestMethod = "POST"
                 conn.doOutput = true
                 conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.OPENROUTER_KEY}")

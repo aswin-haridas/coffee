@@ -19,7 +19,6 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -50,21 +49,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.EditNote
-import androidx.compose.material.icons.outlined.Lightbulb
-import androidx.compose.material.icons.outlined.Memory
-import androidx.compose.material.icons.outlined.Mic
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.SentimentSatisfied
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
@@ -91,13 +75,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
+import androidx.compose.runtime.produceState
+import androidx.activity.result.PickVisualMediaRequest
+import android.graphics.BitmapFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
@@ -162,14 +154,6 @@ private fun Avatar(size: Dp, font: TextUnit) =
         Text(initials.ifEmpty { "?" }, color = Color.White, fontSize = font)
     }
 
-/** ChatGPT's hamburger: two strokes, the lower one shorter. */
-@Composable
-private fun MenuGlyph() = Canvas(Modifier.size(18.dp, 12.dp)) {
-    val w = 2.dp.toPx()
-    drawLine(Fg, Offset(0f, w / 2), Offset(size.width, w / 2), w, StrokeCap.Round)
-    drawLine(Fg, Offset(0f, size.height - w / 2), Offset(size.width * .6f, size.height - w / 2), w, StrokeCap.Round)
-}
-
 /** Flat 56dp app bar: nav icon, title, trailing actions. */
 @Composable
 private fun TopBar(nav: @Composable () -> Unit, title: String, actions: @Composable () -> Unit = {}) =
@@ -185,6 +169,14 @@ private fun ChatScreen(onMenu: () -> Unit, onProfile: () -> Unit) {
     val chat = Store.current
     val streaming = Store.job != null
     var input by rememberSaveable { mutableStateOf("") }
+    var image by rememberSaveable { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            image = withContext(Dispatchers.IO) { Store.saveImage(ctx, uri) }
+            if (image == null) Toast.makeText(ctx, "Couldn't read that image", Toast.LENGTH_SHORT).show()
+        }
+    }
     var autoSend by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<Chat?>(null) }
@@ -192,9 +184,10 @@ private fun ChatScreen(onMenu: () -> Unit, onProfile: () -> Unit) {
     val keyboard = LocalSoftwareKeyboardController.current
 
     fun send(text: String) {
-        if (text.isBlank()) return
-        Store.send(text.trim())
+        if (text.isBlank() && image == null) return
+        Store.send(text.trim(), image)
         input = ""
+        image = null
     }
 
     val speech = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -211,10 +204,10 @@ private fun ChatScreen(onMenu: () -> Unit, onProfile: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
-        TopBar(nav = { IconButton(onMenu) { MenuGlyph() } }, title = "Coffee") {
-            IconButton({ Store.current = null }) { Icon(Icons.Outlined.EditNote, "New chat", tint = Fg) }
+        TopBar(nav = { IconButton(onMenu) { Icon(painterResource(R.drawable.ph_list), "Menu", tint = Fg) } }, title = "Coffee") {
+            IconButton({ Store.current = null }) { Icon(painterResource(R.drawable.ph_note_pencil), "New chat", tint = Fg) }
             Box {
-                IconButton({ menu = true }) { Icon(Icons.Filled.MoreVert, "More", tint = Fg) }
+                IconButton({ menu = true }) { Icon(painterResource(R.drawable.ph_dots_three_vertical), "More", tint = Fg) }
                 DropdownMenu(menu, { menu = false }, containerColor = Raised) {
                     if (chat != null) DropdownMenuItem({ Text("Delete chat", color = Fg) }, { menu = false; deleting = chat })
                     DropdownMenuItem({ Text("Settings", color = Fg) }, { menu = false; onProfile() })
@@ -225,8 +218,8 @@ private fun ChatScreen(onMenu: () -> Unit, onProfile: () -> Unit) {
             if (chat == null || chat.msgs.isEmpty()) {
                 Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 8.dp, vertical = 4.dp)) {
                     listOf(
-                        Triple(Icons.Outlined.Edit, "Write or edit", "Help me write "),
-                        Triple(Icons.Outlined.Lightbulb, "Explain something", "Explain "),
+                        Triple(R.drawable.ph_pencil_simple, "Write or edit", "Help me write "),
+                        Triple(R.drawable.ph_lightbulb, "Explain something", "Explain "),
                     ).forEach { (icon, label, prompt) ->
                         Row(
                             Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable {
@@ -236,7 +229,7 @@ private fun ChatScreen(onMenu: () -> Unit, onProfile: () -> Unit) {
                             }.padding(horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Icon(icon, null, tint = Faint, modifier = Modifier.size(20.dp))
+                            Icon(painterResource(icon), null, tint = Faint, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(12.dp))
                             Text(label, color = Fg, fontSize = Body)
                         }
@@ -248,6 +241,8 @@ private fun ChatScreen(onMenu: () -> Unit, onProfile: () -> Unit) {
         }
         Composer(
             value = input, onChange = { input = it }, focus = focus, streaming = streaming,
+            image = image, onAttach = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            onRemoveImage = { image = null },
             onSend = { send(input) }, onMic = { listen(false) }, onVoice = { listen(true) },
         )
     }
@@ -274,8 +269,9 @@ private fun Messages(chat: Chat, streaming: Boolean) {
             val m = msgs[i]
             val last = i == msgs.lastIndex
             if (m.user) {
-                Box(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), contentAlignment = Alignment.CenterEnd) {
-                    SelectionContainer {
+                Column(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    m.image?.let { Thumb(it, Modifier.size(180.dp).clip(RoundedCornerShape(18.dp))) }
+                    if (m.text.isNotEmpty()) SelectionContainer {
                         Text(
                             m.text, color = Fg, fontSize = Body, lineHeight = 24.sp,
                             modifier = Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 12.dp, vertical = 8.dp),
@@ -304,24 +300,45 @@ private fun Assistant(chat: Chat, m: Msg, last: Boolean, live: Boolean) {
             Row {
                 IconButton({
                     ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("reply", m.text))
-                }, Modifier.size(32.dp)) { Icon(Icons.Outlined.ContentCopy, "Copy", tint = Faint, modifier = Modifier.size(16.dp)) }
+                }, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_copy), "Copy", tint = Faint, modifier = Modifier.size(16.dp)) }
                 if (last) IconButton({ Store.regenerate(chat) }, Modifier.size(32.dp)) {
-                    Icon(Icons.Outlined.Refresh, "Regenerate", tint = Faint, modifier = Modifier.size(16.dp))
+                    Icon(painterResource(R.drawable.ph_arrow_clockwise), "Regenerate", tint = Faint, modifier = Modifier.size(16.dp))
                 }
             }
         }
     }
 }
 
-/** Figma "Composer": one 44dp pill — text, mic, then a 32dp primary button (voice / send / stop). */
+/** Downsampled off the main thread; images are stored at <=1024px so half size is plenty for thumbnails. */
+@Composable
+private fun Thumb(path: String, modifier: Modifier) {
+    val bmp by produceState<ImageBitmap?>(null, path) {
+        value = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = 2 })?.asImageBitmap() }
+    }
+    bmp?.let { Image(it, null, modifier, contentScale = ContentScale.Crop) } ?: Box(modifier.background(Raised))
+}
+
+/** Figma "Composer": [+] then a 44dp pill — attachment preview, text, mic, 32dp primary button (voice / send / stop). */
 @Composable
 private fun Composer(
     value: String, onChange: (String) -> Unit, focus: FocusRequester, streaming: Boolean,
+    image: String?, onAttach: () -> Unit, onRemoveImage: () -> Unit,
     onSend: () -> Unit, onMic: () -> Unit, onVoice: () -> Unit,
-) {
+) = Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+    Box(Modifier.size(44.dp).clip(CircleShape).background(Raised).clickable(onClick = onAttach), contentAlignment = Alignment.Center) {
+        Icon(painterResource(R.drawable.ph_plus), "Attach image", tint = Fg, modifier = Modifier.size(20.dp))
+    }
+    Spacer(Modifier.width(8.dp))
+    Column(Modifier.weight(1f).clip(RoundedCornerShape(22.dp)).background(Raised)) {
+    if (image != null) Box(Modifier.padding(start = 8.dp, top = 8.dp)) {
+        Thumb(image, Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)))
+        Box(
+            Modifier.align(Alignment.TopEnd).padding(2.dp).size(20.dp).clip(CircleShape).background(Bg).border(1.dp, Raised, CircleShape).clickable(onClick = onRemoveImage),
+            contentAlignment = Alignment.Center,
+        ) { Icon(painterResource(R.drawable.ph_x), "Remove image", tint = Fg, modifier = Modifier.size(12.dp)) }
+    }
     Row(
-        Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth().heightIn(min = 44.dp)
-            .clip(RoundedCornerShape(22.dp)).background(Raised).padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+        Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         BasicTextField(
@@ -334,16 +351,17 @@ private fun Composer(
                 }
             },
         )
-        IconButton(onMic, Modifier.size(32.dp)) { Icon(Icons.Outlined.Mic, "Dictate", tint = Faint, modifier = Modifier.size(20.dp)) }
+        IconButton(onMic, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_microphone), "Dictate", tint = Faint, modifier = Modifier.size(20.dp)) }
         Spacer(Modifier.width(4.dp))
         val (icon, label, action) = when {
-            streaming -> Triple(Icons.Filled.Stop, "Stop", Store::stop)
-            value.isBlank() -> Triple(Icons.Filled.GraphicEq, "Voice", onVoice)
-            else -> Triple(Icons.Filled.ArrowUpward, "Send", onSend)
+            streaming -> Triple(R.drawable.ph_stop, "Stop", Store::stop)
+            value.isBlank() && image == null -> Triple(R.drawable.ph_waveform, "Voice", onVoice)
+            else -> Triple(R.drawable.ph_arrow_up, "Send", onSend)
         }
         Box(Modifier.size(32.dp).clip(CircleShape).background(Coral).clickable { action() }, contentAlignment = Alignment.Center) {
-            Icon(icon, label, tint = Color.White, modifier = Modifier.size(18.dp))
+            Icon(painterResource(icon), label, tint = Color.White, modifier = Modifier.size(18.dp))
         }
+    }
     }
 }
 
@@ -360,7 +378,7 @@ private fun Drawer(onPick: (Chat?) -> Unit, onProfile: () -> Unit) {
                     Modifier.weight(1f).height(44.dp).clip(CircleShape).background(Raised).padding(horizontal = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Outlined.Search, null, tint = Faint, modifier = Modifier.size(20.dp))
+                    Icon(painterResource(R.drawable.ph_magnifying_glass), null, tint = Faint, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(10.dp))
                     BasicTextField(
                         query, { query = it }, Modifier.weight(1f),
@@ -368,7 +386,7 @@ private fun Drawer(onPick: (Chat?) -> Unit, onProfile: () -> Unit) {
                         decorationBox = { inner -> Box { if (query.isEmpty()) Text("Search", color = Faint, fontSize = Body); inner() } },
                     )
                 }
-                IconButton({ onPick(null) }) { Icon(Icons.Outlined.EditNote, "New chat", tint = Fg) }
+                IconButton({ onPick(null) }) { Icon(painterResource(R.drawable.ph_note_pencil), "New chat", tint = Fg) }
             }
             val list = if (query.isBlank()) Store.chats else Store.chats.filter { it.title.contains(query, true) }
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
@@ -396,23 +414,23 @@ private fun Drawer(onPick: (Chat?) -> Unit, onProfile: () -> Unit) {
     deleting?.let { c -> DeleteDialog(c) { deleting = null } }
 }
 
-private class Field(val key: String, val title: String, val icon: ImageVector, val hint: String, val sub: () -> String)
+private class Field(val key: String, val title: String, val icon: Int, val hint: String, val sub: () -> String)
 
-private val NameField = Field("name", "Name", Icons.Outlined.Edit, "Your name") { Store["name"] }
+private val NameField = Field("name", "Name", R.drawable.ph_pencil_simple, "Your name") { Store["name"] }
 private val Personal = listOf(
-    Field("system", "Personalization", Icons.Outlined.SentimentSatisfied, "Custom instructions for every chat") {
+    Field("system", "Personalization", R.drawable.ph_smiley, "Custom instructions for every chat") {
         Store["system"].lineSequence().first().ifBlank { "Custom instructions" }
     },
 )
 private val Account = listOf(
-    Field("model", "Model", Icons.Outlined.Memory, DEFAULT_MODEL) { Store.model },
+    Field("model", "Model", R.drawable.ph_cpu, DEFAULT_MODEL) { Store.model },
 )
 
 @Composable
 private fun Profile(onBack: () -> Unit) {
     var editing by remember { mutableStateOf<Field?>(null) }
     Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
-        TopBar(nav = { IconButton(onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", tint = Fg) } }, title = "Settings")
+        TopBar(nav = { IconButton(onBack) { Icon(painterResource(R.drawable.ph_arrow_left), "Back", tint = Fg) } }, title = "Settings")
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 8.dp).clip(RoundedCornerShape(12.dp)).clickable { editing = NameField }.padding(8.dp),
@@ -460,7 +478,7 @@ private fun Group(rows: List<Field>, onClick: (Field) -> Unit) = Column(vertical
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(f.icon, null, tint = Muted, modifier = Modifier.size(20.dp))
+            Icon(painterResource(f.icon), null, tint = Muted, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(16.dp))
             Column {
                 Text(f.title, color = Fg, fontSize = Body)
