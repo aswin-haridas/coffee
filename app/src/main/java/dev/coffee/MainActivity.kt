@@ -51,8 +51,6 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -142,7 +140,7 @@ private fun App() {
                 onProfile = { scope.launch { drawer.snapTo(DrawerValue.Closed) }; profile = true },
             )
         }) {
-            ChatScreen(onMenu = { scope.launch { drawer.open() } }, onProfile = { profile = true })
+            ChatScreen(onMenu = { scope.launch { drawer.open() } })
         }
     }
     UpdatePrompt()
@@ -188,7 +186,7 @@ private fun TopBar(nav: @Composable () -> Unit, title: String, actions: @Composa
     }
 
 @Composable
-private fun ChatScreen(onMenu: () -> Unit, onProfile: () -> Unit) {
+private fun ChatScreen(onMenu: () -> Unit) {
     val ctx = LocalContext.current
     val chat = Store.current
     val streaming = Store.job != null
@@ -202,8 +200,6 @@ private fun ChatScreen(onMenu: () -> Unit, onProfile: () -> Unit) {
         }
     }
     var autoSend by remember { mutableStateOf(false) }
-    var menu by remember { mutableStateOf(false) }
-    var deleting by remember { mutableStateOf<Chat?>(null) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -230,13 +226,6 @@ private fun ChatScreen(onMenu: () -> Unit, onProfile: () -> Unit) {
     Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         TopBar(nav = { IconButton(onMenu) { Icon(painterResource(R.drawable.ph_list), "Menu", tint = Fg) } }, title = "Coffee") {
             IconButton({ Store.current = null }) { Icon(painterResource(R.drawable.ph_note_pencil), "New chat", tint = Fg) }
-            Box {
-                IconButton({ menu = true }) { Icon(painterResource(R.drawable.ph_dots_three_vertical), "More", tint = Fg) }
-                DropdownMenu(menu, { menu = false }, containerColor = Raised) {
-                    if (chat != null) DropdownMenuItem({ Text("Delete chat", color = Fg) }, { menu = false; deleting = chat })
-                    DropdownMenuItem({ Text("Settings", color = Fg) }, { menu = false; onProfile() })
-                }
-            }
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (chat == null || chat.msgs.isEmpty()) {
@@ -270,7 +259,6 @@ private fun ChatScreen(onMenu: () -> Unit, onProfile: () -> Unit) {
             onSend = { send(input) }, onMic = { listen(false) }, onVoice = { listen(true) },
         )
     }
-    deleting?.let { c -> DeleteDialog(c) { deleting = null } }
 }
 
 @Composable
