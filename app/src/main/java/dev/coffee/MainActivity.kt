@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -90,7 +91,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
@@ -117,10 +117,15 @@ private val Raised = Color(0xFF2B2B2B)
 private val Line = Color(0xFF3A3A3A)
 private val DrawerBg = Color(0xFF212121)
 private val CardBg = Color(0xFF3D3D3D)
-private val Coral = Color(0xFFF7735A)
+private val Coral = Color(0xFFCC4A2A)
 private val Teal = Color(0xFF19B48A)
 private val Fg = Color(0xFFECECEC)
-private val Muted = Color(0xFF9B9B9B)
+private val Muted = Color(0xFFADADAD)
+
+// Two text sizes (body / body-small) plus one title size, per the type guidelines.
+private val Body = 16.sp
+private val Small = 14.sp
+private val Title = 20.sp
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -227,7 +232,7 @@ private fun ChatScreen(onMenu: () -> Unit) {
                         ) {
                             Icon(icon, null, tint = Fg, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(14.dp))
-                            Text(label, color = Fg, fontSize = 16.sp)
+                            Text(label, color = Fg, fontSize = Body)
                         }
                     }
                 }
@@ -246,16 +251,16 @@ private fun ChatScreen(onMenu: () -> Unit) {
 private fun Messages(chat: Chat, streaming: Boolean) {
     val msgs = chat.msgs
     // reverseLayout pins the list to the bottom, so streaming text grows upward with no scroll bookkeeping
-    LazyColumn(Modifier.fillMaxSize(), reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
         items(msgs.size, key = { msgs.lastIndex - it }) { r ->
             val i = msgs.lastIndex - r
             val m = msgs[i]
             val last = i == msgs.lastIndex
             if (m.user) {
-                Box(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 6.dp), contentAlignment = Alignment.CenterEnd) {
+                Box(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp), contentAlignment = Alignment.CenterEnd) {
                     SelectionContainer {
                         Text(
-                            m.text, color = Fg, fontSize = 15.sp, lineHeight = 21.sp,
+                            m.text, color = Fg, fontSize = Body, lineHeight = 24.sp,
                             modifier = Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 14.dp, vertical = 8.dp),
                         )
                     }
@@ -270,20 +275,16 @@ private fun Messages(chat: Chat, streaming: Boolean) {
 @Composable
 private fun Assistant(chat: Chat, m: Msg, last: Boolean, live: Boolean) {
     val ctx = LocalContext.current
-    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        if (live && m.text.isEmpty()) {
-            val alpha = rememberInfiniteTransition(label = "thinking").animateFloat(.3f, 1f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "a")
-            Text("Thinking", color = Muted, fontSize = 15.sp, modifier = Modifier.graphicsLayer { this.alpha = alpha.value })
-        } else {
-            SelectionContainer { Text(m.text, color = if (m.err) Coral else Fg, fontSize = 15.sp, lineHeight = 22.sp) }
-        }
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        // "Thinking" shimmers in the composer while streaming, so the reply row stays empty until text arrives
+        if (m.text.isNotEmpty()) SelectionContainer { Text(m.text, color = if (m.err) Coral else Fg, fontSize = Body, lineHeight = 24.sp) }
         if (!live) {
             Row(Modifier.padding(top = 2.dp)) {
                 IconButton({
                     ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("reply", m.text))
-                }, Modifier.size(30.dp)) { Icon(Icons.Outlined.ContentCopy, "Copy", tint = Muted, modifier = Modifier.size(15.dp)) }
-                if (last) IconButton({ Store.regenerate(chat) }, Modifier.size(30.dp)) {
-                    Icon(Icons.Outlined.Refresh, "Regenerate", tint = Muted, modifier = Modifier.size(17.dp))
+                }, Modifier.size(32.dp)) { Icon(Icons.Outlined.ContentCopy, "Copy", tint = Muted, modifier = Modifier.size(16.dp)) }
+                if (last) IconButton({ Store.regenerate(chat) }, Modifier.size(32.dp)) {
+                    Icon(Icons.Outlined.Refresh, "Regenerate", tint = Muted, modifier = Modifier.size(16.dp))
                 }
             }
         }
@@ -297,15 +298,21 @@ private fun Composer(
 ) {
     val shape = RoundedCornerShape(24.dp)
     Column(
-        Modifier.padding(horizontal = 10.dp, vertical = 6.dp).fillMaxWidth().clip(shape).background(Raised).border(1.dp, Line, shape)
+        Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth().clip(shape).background(Raised).border(1.dp, Line, shape)
             .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
     ) {
         BasicTextField(
             value, onChange, Modifier.fillMaxWidth().focusRequester(focus),
-            textStyle = TextStyle(Fg, 16.sp), cursorBrush = SolidColor(Fg), maxLines = 6,
+            textStyle = TextStyle(Fg, Body), cursorBrush = SolidColor(Fg), maxLines = 6,
             decorationBox = { inner ->
                 Box {
-                    if (value.isEmpty()) Text("Ask Coffee", color = Muted, fontSize = 16.sp)
+                    if (value.isEmpty() && streaming) {
+                        // alpha read inside graphicsLayer: the shimmer animates without recomposing
+                        val alpha = rememberInfiniteTransition(label = "thinking").animateFloat(.3f, 1f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "a")
+                        Text("Thinking", color = Muted, fontSize = Body, modifier = Modifier.graphicsLayer { this.alpha = alpha.value })
+                    } else if (value.isEmpty()) {
+                        Text("Ask Coffee", color = Muted, fontSize = Body)
+                    }
                     inner()
                 }
             },
@@ -335,15 +342,15 @@ private fun Drawer(onPick: (Chat?) -> Unit, onProfile: () -> Unit) {
     ModalDrawerSheet(Modifier.fillMaxWidth(.8f), drawerShape = RectangleShape, drawerContainerColor = DrawerBg, windowInsets = WindowInsets(0)) {
         Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().statusBarsPadding()) {
-                Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 12.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     val q = query
                     if (q == null) {
-                        Text("Coffee", color = Fg, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        Text("Coffee", color = Fg, fontSize = Title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                     } else {
                         BasicTextField(
                             q, { query = it }, Modifier.weight(1f).focusRequester(focus),
-                            textStyle = TextStyle(Fg, 17.sp), cursorBrush = SolidColor(Fg), singleLine = true,
-                            decorationBox = { inner -> Box { if (q.isEmpty()) Text("Search chats", color = Muted, fontSize = 17.sp); inner() } },
+                            textStyle = TextStyle(Fg, Body), cursorBrush = SolidColor(Fg), singleLine = true,
+                            decorationBox = { inner -> Box { if (q.isEmpty()) Text("Search chats", color = Muted, fontSize = Body); inner() } },
                         )
                         androidx.compose.runtime.LaunchedEffect(Unit) { focus.requestFocus() }
                     }
@@ -355,7 +362,7 @@ private fun Drawer(onPick: (Chat?) -> Unit, onProfile: () -> Unit) {
                 LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp)) {
                     items(list, key = { it.id }) { c ->
                         Text(
-                            c.title, color = Fg, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            c.title, color = Fg, fontSize = Body, maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp).clip(RoundedCornerShape(12.dp))
                                 .background(if (c === Store.current) Raised else Color.Transparent)
                                 .combinedClickable(onLongClick = { deleting = c }) { onPick(c) }
@@ -366,20 +373,20 @@ private fun Drawer(onPick: (Chat?) -> Unit, onProfile: () -> Unit) {
             }
             Row(
                 Modifier.align(Alignment.BottomStart).fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, DrawerBg, DrawerBg)))
-                    .navigationBarsPadding().padding(start = 16.dp, end = 12.dp, top = 24.dp, bottom = 10.dp),
+                    .background(DrawerBg)
+                    .navigationBarsPadding().padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Row(
-                    Modifier.height(44.dp).clip(CircleShape).background(Coral).clickable { onPick(null) }.padding(horizontal = 18.dp),
+                    Modifier.heightIn(min = 44.dp).clip(CircleShape).background(Coral).clickable { onPick(null) }.padding(horizontal = 18.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(Icons.Outlined.Edit, null, tint = Color.White, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Chat", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    Text("Chat", color = Color.White, fontSize = Body, fontWeight = FontWeight.Medium)
                 }
                 Spacer(Modifier.weight(1f))
-                Circle("Settings", onProfile, size = 44.dp) { Avatar(34.dp, 14.sp) }
+                Circle("Settings", onProfile, size = 44.dp) { Avatar(32.dp, 14.sp) }
             }
         }
     }
@@ -416,12 +423,12 @@ private fun Profile(onBack: () -> Unit) {
                 Box(Modifier.clip(CircleShape).clickable { editing = NameField }) {
                     Avatar(84.dp, 32.sp)
                     Box(
-                        Modifier.align(Alignment.BottomEnd).size(30.dp).clip(CircleShape).background(Color(0xFF235C4D)).border(3.dp, Bg, CircleShape),
+                        Modifier.align(Alignment.BottomEnd).size(28.dp).clip(CircleShape).background(Color(0xFF235C4D)).border(3.dp, Bg, CircleShape),
                         contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.Outlined.Edit, "Edit name", tint = Color.White, modifier = Modifier.size(15.dp)) }
+                    ) { Icon(Icons.Outlined.Edit, "Edit name", tint = Color.White, modifier = Modifier.size(16.dp)) }
                 }
-                Spacer(Modifier.height(10.dp))
-                Text(Store["name"].ifBlank { "Add your name" }, color = Fg, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+                Text(Store["name"].ifBlank { "Add your name" }, color = Fg, fontSize = Title, fontWeight = FontWeight.Bold)
             }
         }
         Section("My Coffee")
@@ -449,23 +456,23 @@ private fun Profile(onBack: () -> Unit) {
 
 @Composable
 private fun Section(title: String) =
-    Text(title, color = Muted, fontSize = 15.sp, modifier = Modifier.padding(start = 20.dp, top = 26.dp, bottom = 10.dp))
+    Text(title, color = Muted, fontSize = Small, modifier = Modifier.padding(start = 20.dp, top = 24.dp, bottom = 8.dp))
 
 @Composable
-private fun Group(rows: List<Field>, onClick: (Field) -> Unit) = Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+private fun Group(rows: List<Field>, onClick: (Field) -> Unit) = Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
     rows.forEachIndexed { i, f ->
-        val top = if (i == 0) 22.dp else 5.dp
-        val bottom = if (i == rows.lastIndex) 22.dp else 5.dp
+        val top = if (i == 0) 20.dp else 4.dp
+        val bottom = if (i == rows.lastIndex) 20.dp else 4.dp
         Row(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(top, top, bottom, bottom)).background(CardBg).clickable { onClick(f) }
-                .padding(horizontal = 18.dp, vertical = 13.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(f.icon, null, tint = Fg, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(16.dp))
             Column {
-                Text(f.title, color = Fg, fontSize = 16.sp)
-                Text(f.sub(), color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(f.title, color = Fg, fontSize = Body)
+                Text(f.sub(), color = Muted, fontSize = Small, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
