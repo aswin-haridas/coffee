@@ -14,8 +14,8 @@ android {
         applicationId = "dev.coffee"
         minSdk = 26
         targetSdk = 36
-        versionCode = 9
-        versionName = "1.6.2"
+        versionCode = 10
+        versionName = "1.6.3"
         // Key lives in gitignored secrets.properties so it never lands in the public repo.
         val secrets = rootProject.file("secrets.properties").takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
         buildConfigField("String", "OPENROUTER_KEY", "\"${secrets?.getProperty("OPENROUTER_KEY").orEmpty()}\"")

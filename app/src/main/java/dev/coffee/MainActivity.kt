@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -62,6 +63,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -202,12 +204,14 @@ private fun ChatScreen(onMenu: () -> Unit) {
     var autoSend by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
+    val listState = remember(chat?.id) { LazyListState() }
 
     fun send(text: String) {
         if (text.isBlank() && image == null) return
         Store.send(text.trim(), image)
         input = ""
         image = null
+        scope.launch { listState.animateScrollToItem(0) }
     }
 
     val speech = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -249,7 +253,7 @@ private fun ChatScreen(onMenu: () -> Unit) {
                     }
                 }
             } else {
-                Messages(chat, streaming)
+                Messages(chat, streaming, listState)
             }
         }
         Composer(
@@ -272,10 +276,11 @@ private fun DeleteDialog(chat: Chat, onDone: () -> Unit) = AlertDialog(
 )
 
 @Composable
-private fun Messages(chat: Chat, streaming: Boolean) {
+private fun Messages(chat: Chat, streaming: Boolean, listState: LazyListState) {
     val msgs = chat.msgs
+    LaunchedEffect(msgs.size) { listState.animateScrollToItem(0) }
     // reverseLayout pins the list to the bottom, so streaming text grows upward with no scroll bookkeeping
-    LazyColumn(Modifier.fillMaxSize(), reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
         items(msgs.size, key = { msgs.lastIndex - it }) { r ->
             val i = msgs.lastIndex - r
             val m = msgs[i]
