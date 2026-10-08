@@ -33,6 +33,20 @@ import java.util.UUID
 
 const val DEFAULT_MODEL = "openrouter/free"
 
+/**
+ * Sent with every request. openrouter/free routes each call to a random free model, so this pins down
+ * the voice and format rather than leaving it to whichever model answers. Replies render as plain text.
+ */
+private const val BASE_PROMPT = """You are Coffee, a helpful assistant in a mobile chat app.
+
+Reply like a thoughtful person texting a friend: natural, warm and direct.
+- Lead with the answer. No preamble, no restating the question, no "Great question" or "Sure!".
+- Keep it short. One to three sentences is usually enough; go longer only when the question truly needs detail or the user asks for it.
+- Write plain text. The app does not render markdown, so never use headings, bold, italics, tables or code fences. Use a simple numbered or dashed list only when steps or options are genuinely clearer that way.
+- Don't mention being an AI, a language model, your training or your model name unless asked. Don't add disclaimers or a closing offer to help more.
+- If something is unclear, ask one short question instead of guessing.
+- Match the user's language and tone."""
+
 /** Text is snapshot state so a streaming token only invalidates its own Text, not the whole list. */
 class Msg(val user: Boolean, text: String, err: Boolean = false, val image: String? = null) {
     var text by mutableStateOf(text)
@@ -110,7 +124,11 @@ object Store {
         val history = chat.msgs.filter { !it.err && (it.text.isNotBlank() || it.image != null) }.map { Turn(it.user, it.text, it.image) }
         val m = Msg(false, "")
         chat.msgs += m
-        val (model, system) = model to this["system"]
+        val system = buildString {
+            append(BASE_PROMPT)
+            this@Store["name"].takeIf { it.isNotBlank() }?.let { append("\n\nThe user's name is $it.") }
+            this@Store["system"].takeIf { it.isNotBlank() }?.let { append("\n\nThe user's own instructions, which take priority over the above:\n$it") }
+        }
         job = scope.launch {
             try {
                 OpenRouter.stream(model, system, history).collect { m.text = it }
@@ -189,7 +207,7 @@ object OpenRouter {
         launch(Dispatchers.IO) {
             try {
                 val messages = JSONArray()
-                if (system.isNotBlank()) messages.put(JSONObject().put("role", "system").put("content", system))
+                messages.put(JSONObject().put("role", "system").put("content", system))
                 history.forEach { t ->
                     val content: Any = if (t.image == null) t.text else JSONArray().apply {
                         if (t.text.isNotBlank()) put(JSONObject().put("type", "text").put("text", t.text))
