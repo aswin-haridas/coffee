@@ -22,7 +22,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -55,11 +54,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.outlined.ChatBubbleOutline
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Mic
@@ -68,6 +67,8 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SentimentSatisfied
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -99,10 +100,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -112,20 +109,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
-private val Bg = Color(0xFF000000)
-private val Raised = Color(0xFF2B2B2B)
-private val Line = Color(0xFF3A3A3A)
-private val DrawerBg = Color(0xFF212121)
-private val CardBg = Color(0xFF3D3D3D)
-private val Coral = Color(0xFFCC4A2A)
+// Dark tokens from the official "Apps in ChatGPT" Figma (Foundations / Color).
+private val Bg = Color(0xFF212121)       // background primary
+private val Raised = Color(0xFF303030)   // background secondary: bubbles, composer, cards
+private val Pressed = Color(0xFF414141)  // background tertiary: selected rows
+private val Fg = Color(0xFFFFFFFF)       // text primary
+private val Muted = Color(0xFFCDCDCD)    // text secondary
+private val Faint = Color(0xFFAFAFAF)    // text tertiary: placeholders, labels, quiet icons
+private val Coral = Color(0xFFCC4A2A)    // brand accent (AA with white), primary button only
 private val Teal = Color(0xFF19B48A)
-private val Fg = Color(0xFFECECEC)
-private val Muted = Color(0xFFADADAD)
 
-// Two text sizes (body / body-small) plus one title size, per the type guidelines.
 private val Body = 16.sp
 private val Small = 14.sp
-private val Title = 20.sp
+private val Title = 18.sp
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -134,7 +130,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Store.init(applicationContext)
         setContent {
-            MaterialTheme(darkColorScheme(primary = Coral, background = Bg, surface = DrawerBg, surfaceContainerHigh = DrawerBg)) { App() }
+            MaterialTheme(darkColorScheme(primary = Coral, background = Bg, surface = Raised, surfaceContainerHigh = Raised)) { App() }
         }
     }
 }
@@ -154,18 +150,10 @@ private fun App() {
                 onProfile = { scope.launch { drawer.snapTo(DrawerValue.Closed) }; profile = true },
             )
         }) {
-            ChatScreen(onMenu = { scope.launch { drawer.open() } })
+            ChatScreen(onMenu = { scope.launch { drawer.open() } }, onProfile = { profile = true })
         }
     }
 }
-
-@Composable
-private fun Circle(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, size: Dp = 40.dp, content: @Composable () -> Unit) =
-    Box(
-        modifier.size(size).clip(CircleShape).background(Raised).border(1.dp, Line, CircleShape)
-            .clickable(onClick = onClick).semantics { contentDescription = label; role = Role.Button },
-        contentAlignment = Alignment.Center,
-    ) { content() }
 
 @Composable
 private fun Avatar(size: Dp, font: TextUnit) =
@@ -174,13 +162,32 @@ private fun Avatar(size: Dp, font: TextUnit) =
         Text(initials.ifEmpty { "?" }, color = Color.White, fontSize = font)
     }
 
+/** ChatGPT's hamburger: two strokes, the lower one shorter. */
 @Composable
-private fun ChatScreen(onMenu: () -> Unit) {
+private fun MenuGlyph() = Canvas(Modifier.size(18.dp, 12.dp)) {
+    val w = 2.dp.toPx()
+    drawLine(Fg, Offset(0f, w / 2), Offset(size.width, w / 2), w, StrokeCap.Round)
+    drawLine(Fg, Offset(0f, size.height - w / 2), Offset(size.width * .6f, size.height - w / 2), w, StrokeCap.Round)
+}
+
+/** Flat 56dp app bar: nav icon, title, trailing actions. */
+@Composable
+private fun TopBar(nav: @Composable () -> Unit, title: String, actions: @Composable () -> Unit = {}) =
+    Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        nav()
+        Text(title, color = Fg, fontSize = Title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).padding(start = 4.dp))
+        actions()
+    }
+
+@Composable
+private fun ChatScreen(onMenu: () -> Unit, onProfile: () -> Unit) {
     val ctx = LocalContext.current
     val chat = Store.current
     val streaming = Store.job != null
     var input by rememberSaveable { mutableStateOf("") }
     var autoSend by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<Chat?>(null) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -204,34 +211,33 @@ private fun ChatScreen(onMenu: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-            Circle("Menu", onMenu) {
-                Canvas(Modifier.size(16.dp, 10.dp)) {
-                    val w = 1.8.dp.toPx()
-                    drawLine(Fg, Offset(0f, w / 2), Offset(size.width, w / 2), w, StrokeCap.Round)
-                    drawLine(Fg, Offset(0f, size.height - w / 2), Offset(size.width * .6f, size.height - w / 2), w, StrokeCap.Round)
+        TopBar(nav = { IconButton(onMenu) { MenuGlyph() } }, title = "Coffee") {
+            IconButton({ Store.current = null }) { Icon(Icons.Outlined.EditNote, "New chat", tint = Fg) }
+            Box {
+                IconButton({ menu = true }) { Icon(Icons.Filled.MoreVert, "More", tint = Fg) }
+                DropdownMenu(menu, { menu = false }, containerColor = Raised) {
+                    if (chat != null) DropdownMenuItem({ Text("Delete chat", color = Fg) }, { menu = false; deleting = chat })
+                    DropdownMenuItem({ Text("Settings", color = Fg) }, { menu = false; onProfile() })
                 }
             }
-            Spacer(Modifier.weight(1f))
-            Circle("New chat", { Store.current = null }) { Icon(Icons.Outlined.ChatBubbleOutline, null, tint = Fg, modifier = Modifier.size(20.dp)) }
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (chat == null || chat.msgs.isEmpty()) {
-                Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 12.dp, vertical = 4.dp)) {
+                Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 8.dp, vertical = 4.dp)) {
                     listOf(
                         Triple(Icons.Outlined.Edit, "Write or edit", "Help me write "),
                         Triple(Icons.Outlined.Lightbulb, "Explain something", "Explain "),
                     ).forEach { (icon, label, prompt) ->
                         Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable {
+                            Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable {
                                 input = prompt
                                 focus.requestFocus()
                                 keyboard?.show()
-                            }.padding(horizontal = 12.dp, vertical = 12.dp),
+                            }.padding(horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Icon(icon, null, tint = Fg, modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(14.dp))
+                            Icon(icon, null, tint = Faint, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(12.dp))
                             Text(label, color = Fg, fontSize = Body)
                         }
                     }
@@ -245,7 +251,18 @@ private fun ChatScreen(onMenu: () -> Unit) {
             onSend = { send(input) }, onMic = { listen(false) }, onVoice = { listen(true) },
         )
     }
+    deleting?.let { c -> DeleteDialog(c) { deleting = null } }
 }
+
+@Composable
+private fun DeleteDialog(chat: Chat, onDone: () -> Unit) = AlertDialog(
+    onDismissRequest = onDone,
+    containerColor = Raised,
+    title = { Text("Delete chat?", color = Fg) },
+    text = { Text(chat.title, color = Muted, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+    confirmButton = { TextButton({ Store.delete(chat); onDone() }) { Text("Delete", color = Color(0xFFFF8A80)) } },
+    dismissButton = { TextButton(onDone) { Text("Cancel", color = Fg) } },
+)
 
 @Composable
 private fun Messages(chat: Chat, streaming: Boolean) {
@@ -257,11 +274,11 @@ private fun Messages(chat: Chat, streaming: Boolean) {
             val m = msgs[i]
             val last = i == msgs.lastIndex
             if (m.user) {
-                Box(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp), contentAlignment = Alignment.CenterEnd) {
+                Box(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), contentAlignment = Alignment.CenterEnd) {
                     SelectionContainer {
                         Text(
                             m.text, color = Fg, fontSize = Body, lineHeight = 24.sp,
-                            modifier = Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 14.dp, vertical = 8.dp),
+                            modifier = Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 12.dp, vertical = 8.dp),
                         )
                     }
                 }
@@ -276,129 +293,107 @@ private fun Messages(chat: Chat, streaming: Boolean) {
 private fun Assistant(chat: Chat, m: Msg, last: Boolean, live: Boolean) {
     val ctx = LocalContext.current
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        // "Thinking" shimmers in the composer while streaming, so the reply row stays empty until text arrives
-        if (m.text.isNotEmpty()) SelectionContainer { Text(m.text, color = if (m.err) Coral else Fg, fontSize = Body, lineHeight = 24.sp) }
+        if (live && m.text.isEmpty()) {
+            // Figma "isLoading": a pulsing dot. Scale read inside graphicsLayer, so it animates without recomposing.
+            val pulse = rememberInfiniteTransition(label = "loading").animateFloat(.6f, 1f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "p")
+            Box(Modifier.padding(vertical = 6.dp).size(12.dp).graphicsLayer { scaleX = pulse.value; scaleY = pulse.value }.clip(CircleShape).background(Fg))
+        } else {
+            SelectionContainer { Text(m.text, color = if (m.err) Color(0xFFFF8A80) else Fg, fontSize = Body, lineHeight = 24.sp) }
+        }
         if (!live) {
-            Row(Modifier.padding(top = 2.dp)) {
+            Row {
                 IconButton({
                     ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("reply", m.text))
-                }, Modifier.size(32.dp)) { Icon(Icons.Outlined.ContentCopy, "Copy", tint = Muted, modifier = Modifier.size(16.dp)) }
+                }, Modifier.size(32.dp)) { Icon(Icons.Outlined.ContentCopy, "Copy", tint = Faint, modifier = Modifier.size(16.dp)) }
                 if (last) IconButton({ Store.regenerate(chat) }, Modifier.size(32.dp)) {
-                    Icon(Icons.Outlined.Refresh, "Regenerate", tint = Muted, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Outlined.Refresh, "Regenerate", tint = Faint, modifier = Modifier.size(16.dp))
                 }
             }
         }
     }
 }
 
+/** Figma "Composer": one 44dp pill — text, mic, then a 32dp primary button (voice / send / stop). */
 @Composable
 private fun Composer(
     value: String, onChange: (String) -> Unit, focus: FocusRequester, streaming: Boolean,
     onSend: () -> Unit, onMic: () -> Unit, onVoice: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(24.dp)
-    Column(
-        Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth().clip(shape).background(Raised).border(1.dp, Line, shape)
-            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
+    Row(
+        Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth().heightIn(min = 44.dp)
+            .clip(RoundedCornerShape(22.dp)).background(Raised).padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         BasicTextField(
-            value, onChange, Modifier.fillMaxWidth().focusRequester(focus),
-            textStyle = TextStyle(Fg, Body), cursorBrush = SolidColor(Fg), maxLines = 6,
+            value, onChange, Modifier.weight(1f).focusRequester(focus),
+            textStyle = TextStyle(Fg, Body, lineHeight = 22.sp), cursorBrush = SolidColor(Fg), maxLines = 6,
             decorationBox = { inner ->
                 Box {
-                    if (value.isEmpty() && streaming) {
-                        // alpha read inside graphicsLayer: the shimmer animates without recomposing
-                        val alpha = rememberInfiniteTransition(label = "thinking").animateFloat(.3f, 1f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "a")
-                        Text("Thinking", color = Muted, fontSize = Body, modifier = Modifier.graphicsLayer { this.alpha = alpha.value })
-                    } else if (value.isEmpty()) {
-                        Text("Ask Coffee", color = Muted, fontSize = Body)
-                    }
+                    if (value.isEmpty()) Text("Ask anything", color = Faint, fontSize = Body)
                     inner()
                 }
             },
         )
-        Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Spacer(Modifier.weight(1f))
-            IconButton(onMic, Modifier.size(36.dp)) { Icon(Icons.Outlined.Mic, "Dictate", tint = Fg, modifier = Modifier.size(20.dp)) }
-            Spacer(Modifier.width(6.dp))
-            val (icon, label, action) = when {
-                streaming -> Triple(Icons.Filled.Stop, "Stop", Store::stop)
-                value.isBlank() -> Triple(Icons.Filled.GraphicEq, "Voice", onVoice)
-                else -> Triple(Icons.Filled.ArrowUpward, "Send", onSend)
-            }
-            Box(Modifier.size(36.dp).clip(CircleShape).background(Coral).clickable { action() }, contentAlignment = Alignment.Center) {
-                Icon(icon, label, tint = Color.White, modifier = Modifier.size(20.dp))
-            }
+        IconButton(onMic, Modifier.size(32.dp)) { Icon(Icons.Outlined.Mic, "Dictate", tint = Faint, modifier = Modifier.size(20.dp)) }
+        Spacer(Modifier.width(4.dp))
+        val (icon, label, action) = when {
+            streaming -> Triple(Icons.Filled.Stop, "Stop", Store::stop)
+            value.isBlank() -> Triple(Icons.Filled.GraphicEq, "Voice", onVoice)
+            else -> Triple(Icons.Filled.ArrowUpward, "Send", onSend)
+        }
+        Box(Modifier.size(32.dp).clip(CircleShape).background(Coral).clickable { action() }, contentAlignment = Alignment.Center) {
+            Icon(icon, label, tint = Color.White, modifier = Modifier.size(18.dp))
         }
     }
 }
 
+/** Figma "Sidebar": search pill + new chat, "Chats" label, 48dp rows; profile row pinned at the bottom. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Drawer(onPick: (Chat?) -> Unit, onProfile: () -> Unit) {
-    var query by remember { mutableStateOf<String?>(null) }
+    var query by remember { mutableStateOf("") }
     var deleting by remember { mutableStateOf<Chat?>(null) }
-    val focus = remember { FocusRequester() }
-    ModalDrawerSheet(Modifier.fillMaxWidth(.8f), drawerShape = RectangleShape, drawerContainerColor = DrawerBg, windowInsets = WindowInsets(0)) {
-        Box(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().statusBarsPadding()) {
-                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    val q = query
-                    if (q == null) {
-                        Text("Coffee", color = Fg, fontSize = Title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                    } else {
-                        BasicTextField(
-                            q, { query = it }, Modifier.weight(1f).focusRequester(focus),
-                            textStyle = TextStyle(Fg, Body), cursorBrush = SolidColor(Fg), singleLine = true,
-                            decorationBox = { inner -> Box { if (q.isEmpty()) Text("Search chats", color = Muted, fontSize = Body); inner() } },
-                        )
-                        androidx.compose.runtime.LaunchedEffect(Unit) { focus.requestFocus() }
-                    }
-                    Circle(if (q == null) "Search" else "Close search", { query = if (q == null) "" else null }) {
-                        Icon(if (q == null) Icons.Outlined.Search else Icons.Outlined.Close, null, tint = Fg, modifier = Modifier.size(20.dp))
-                    }
+    ModalDrawerSheet(Modifier.fillMaxWidth(.8f), drawerShape = RectangleShape, drawerContainerColor = Bg, windowInsets = WindowInsets(0)) {
+        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.weight(1f).height(44.dp).clip(CircleShape).background(Raised).padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.Search, null, tint = Faint, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    BasicTextField(
+                        query, { query = it }, Modifier.weight(1f),
+                        textStyle = TextStyle(Fg, Body), cursorBrush = SolidColor(Fg), singleLine = true,
+                        decorationBox = { inner -> Box { if (query.isEmpty()) Text("Search", color = Faint, fontSize = Body); inner() } },
+                    )
                 }
-                val list = query.let { q -> if (q.isNullOrBlank()) Store.chats else Store.chats.filter { it.title.contains(q, true) } }
-                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp)) {
-                    items(list, key = { it.id }) { c ->
-                        Text(
-                            c.title, color = Fg, fontSize = Body, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp).clip(RoundedCornerShape(12.dp))
-                                .background(if (c === Store.current) Raised else Color.Transparent)
-                                .combinedClickable(onLongClick = { deleting = c }) { onPick(c) }
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                        )
-                    }
+                IconButton({ onPick(null) }) { Icon(Icons.Outlined.EditNote, "New chat", tint = Fg) }
+            }
+            val list = if (query.isBlank()) Store.chats else Store.chats.filter { it.title.contains(query, true) }
+            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+                if (list.isNotEmpty()) item { Text("Chats", color = Faint, fontSize = Small, modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp)) }
+                items(list, key = { it.id }) { c ->
+                    Box(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
+                            .background(if (c === Store.current) Pressed else Color.Transparent)
+                            .combinedClickable(onLongClick = { deleting = c }) { onPick(c) }
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.CenterStart,
+                    ) { Text(c.title, color = Fg, fontSize = Body, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
             }
             Row(
-                Modifier.align(Alignment.BottomStart).fillMaxWidth()
-                    .background(DrawerBg)
-                    .navigationBarsPadding().padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                Modifier.fillMaxWidth().padding(8.dp).heightIn(min = 52.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onProfile).padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    Modifier.heightIn(min = 44.dp).clip(CircleShape).background(Coral).clickable { onPick(null) }.padding(horizontal = 18.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Outlined.Edit, null, tint = Color.White, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Chat", color = Color.White, fontSize = Body, fontWeight = FontWeight.Medium)
-                }
-                Spacer(Modifier.weight(1f))
-                Circle("Settings", onProfile, size = 44.dp) { Avatar(32.dp, 14.sp) }
+                Avatar(32.dp, 13.sp)
+                Spacer(Modifier.width(12.dp))
+                Text(Store["name"].ifBlank { "Settings" }, color = Fg, fontSize = Body, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
-    deleting?.let { c ->
-        AlertDialog(
-            onDismissRequest = { deleting = null },
-            title = { Text("Delete chat?") },
-            text = { Text(c.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-            confirmButton = { TextButton({ Store.delete(c); deleting = null }) { Text("Delete", color = Coral) } },
-            dismissButton = { TextButton({ deleting = null }) { Text("Cancel", color = Fg) } },
-        )
-    }
+    deleting?.let { c -> DeleteDialog(c) { deleting = null } }
 }
 
 private class Field(val key: String, val title: String, val icon: ImageVector, val hint: String, val sub: () -> String)
@@ -416,63 +411,60 @@ private val Account = listOf(
 @Composable
 private fun Profile(onBack: () -> Unit) {
     var editing by remember { mutableStateOf<Field?>(null) }
-    Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-        Box(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-            Circle("Back", onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, null, tint = Fg, modifier = Modifier.size(20.dp)) }
-            Column(Modifier.align(Alignment.TopCenter), horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(Modifier.clip(CircleShape).clickable { editing = NameField }) {
-                    Avatar(84.dp, 32.sp)
-                    Box(
-                        Modifier.align(Alignment.BottomEnd).size(28.dp).clip(CircleShape).background(Color(0xFF235C4D)).border(3.dp, Bg, CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.Outlined.Edit, "Edit name", tint = Color.White, modifier = Modifier.size(16.dp)) }
+    Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
+        TopBar(nav = { IconButton(onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", tint = Fg) } }, title = "Settings")
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 8.dp).clip(RoundedCornerShape(12.dp)).clickable { editing = NameField }.padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Avatar(56.dp, 22.sp)
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(Store["name"].ifBlank { "Add your name" }, color = Fg, fontSize = Title, fontWeight = FontWeight.SemiBold)
+                    Text("Tap to edit", color = Faint, fontSize = Small)
                 }
-                Spacer(Modifier.height(12.dp))
-                Text(Store["name"].ifBlank { "Add your name" }, color = Fg, fontSize = Title, fontWeight = FontWeight.Bold)
             }
+            Section("My Coffee")
+            Group(Personal) { editing = it }
+            Section("Account")
+            Group(Account) { editing = it }
+            Spacer(Modifier.height(24.dp))
         }
-        Section("My Coffee")
-        Group(Personal) { editing = it }
-        Section("Account")
-        Group(Account) { editing = it }
-        Spacer(Modifier.height(24.dp))
     }
     editing?.let { f ->
         var v by remember(f) { mutableStateOf(Store[f.key]) }
         val multi = f.key == "system"
         AlertDialog(
             onDismissRequest = { editing = null },
-            title = { Text(f.title) },
-            text = {
-                OutlinedTextField(
-                    v, { v = it }, placeholder = { Text(f.hint) }, singleLine = !multi, minLines = if (multi) 4 else 1,
-                )
-            },
-            confirmButton = { TextButton({ Store[f.key] = v.trim(); editing = null }) { Text("Save", color = Coral) } },
-            dismissButton = { TextButton({ editing = null }) { Text("Cancel", color = Fg) } },
+            containerColor = Raised,
+            title = { Text(f.title, color = Fg) },
+            text = { OutlinedTextField(v, { v = it }, placeholder = { Text(f.hint) }, singleLine = !multi, minLines = if (multi) 4 else 1) },
+            confirmButton = { TextButton({ Store[f.key] = v.trim(); editing = null }) { Text("Save", color = Fg) } },
+            dismissButton = { TextButton({ editing = null }) { Text("Cancel", color = Muted) } },
         )
     }
 }
 
 @Composable
 private fun Section(title: String) =
-    Text(title, color = Muted, fontSize = Small, modifier = Modifier.padding(start = 20.dp, top = 24.dp, bottom = 8.dp))
+    Text(title, color = Faint, fontSize = Small, modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp))
 
 @Composable
 private fun Group(rows: List<Field>, onClick: (Field) -> Unit) = Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
     rows.forEachIndexed { i, f ->
-        val top = if (i == 0) 20.dp else 4.dp
-        val bottom = if (i == rows.lastIndex) 20.dp else 4.dp
+        val top = if (i == 0) 16.dp else 4.dp
+        val bottom = if (i == rows.lastIndex) 16.dp else 4.dp
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(top, top, bottom, bottom)).background(CardBg).clickable { onClick(f) }
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+            Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(RoundedCornerShape(top, top, bottom, bottom)).background(Raised).clickable { onClick(f) }
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(f.icon, null, tint = Fg, modifier = Modifier.size(22.dp))
+            Icon(f.icon, null, tint = Muted, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(16.dp))
             Column {
                 Text(f.title, color = Fg, fontSize = Body)
-                Text(f.sub(), color = Muted, fontSize = Small, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(f.sub(), color = Faint, fontSize = Small, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
