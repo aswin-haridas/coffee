@@ -145,6 +145,30 @@ private fun App() {
             ChatScreen(onMenu = { scope.launch { drawer.open() } }, onProfile = { profile = true })
         }
     }
+    UpdatePrompt()
+}
+
+@Composable
+private fun UpdatePrompt() {
+    val ctx = LocalContext.current
+    val release by produceState<Updater.Release?>(null) { value = withContext(Dispatchers.IO) { Updater.check() } }
+    var dismissed by rememberSaveable { mutableStateOf(false) }
+    val r = release ?: return
+    if (dismissed) return
+    AlertDialog(
+        onDismissRequest = { dismissed = true },
+        containerColor = Raised,
+        title = { Text("Update available", color = Fg) },
+        text = { Text("Coffee ${r.version} is out. You have ${BuildConfig.VERSION_NAME}.", color = Muted) },
+        confirmButton = {
+            TextButton({
+                dismissed = true
+                Updater.install(ctx, r)
+                Toast.makeText(ctx, "Downloading update…", Toast.LENGTH_SHORT).show()
+            }) { Text("Update", color = Fg) }
+        },
+        dismissButton = { TextButton({ dismissed = true }) { Text("Later", color = Muted) } },
+    )
 }
 
 @Composable
