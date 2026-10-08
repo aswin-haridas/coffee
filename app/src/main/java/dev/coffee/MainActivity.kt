@@ -59,7 +59,6 @@ import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Mic
@@ -106,8 +105,6 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
@@ -152,7 +149,7 @@ private fun App() {
                 onProfile = { scope.launch { drawer.snapTo(DrawerValue.Closed) }; profile = true },
             )
         }) {
-            ChatScreen(onMenu = { scope.launch { drawer.open() } }, onNeedKey = { profile = true })
+            ChatScreen(onMenu = { scope.launch { drawer.open() } })
         }
     }
 }
@@ -173,7 +170,7 @@ private fun Avatar(size: Dp, font: TextUnit) =
     }
 
 @Composable
-private fun ChatScreen(onMenu: () -> Unit, onNeedKey: () -> Unit) {
+private fun ChatScreen(onMenu: () -> Unit) {
     val ctx = LocalContext.current
     val chat = Store.current
     val streaming = Store.job != null
@@ -184,11 +181,6 @@ private fun ChatScreen(onMenu: () -> Unit, onNeedKey: () -> Unit) {
 
     fun send(text: String) {
         if (text.isBlank()) return
-        if (Store.key.isBlank()) {
-            Toast.makeText(ctx, "Add your Anthropic API key first", Toast.LENGTH_SHORT).show()
-            onNeedKey()
-            return
-        }
         Store.send(text.trim())
         input = ""
     }
@@ -411,7 +403,6 @@ private val Personal = listOf(
     },
 )
 private val Account = listOf(
-    Field("key", "API key", Icons.Outlined.Key, "sk-ant-…") { Store.key.let { if (it.isBlank()) "Not set" else "••••" + it.takeLast(4) } },
     Field("model", "Model", Icons.Outlined.Memory, DEFAULT_MODEL) { Store.model },
 )
 
@@ -448,7 +439,6 @@ private fun Profile(onBack: () -> Unit) {
             text = {
                 OutlinedTextField(
                     v, { v = it }, placeholder = { Text(f.hint) }, singleLine = !multi, minLines = if (multi) 4 else 1,
-                    visualTransformation = if (f.key == "key") PasswordVisualTransformation() else VisualTransformation.None,
                 )
             },
             confirmButton = { TextButton({ Store[f.key] = v.trim(); editing = null }) { Text("Save", color = Coral) } },

@@ -14,9 +14,13 @@ android {
         applicationId = "dev.coffee"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
+        // Key lives in gitignored secrets.properties so it never lands in the public repo.
+        val secrets = rootProject.file("secrets.properties").takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
+        buildConfigField("String", "OPENROUTER_KEY", "\"${secrets?.getProperty("OPENROUTER_KEY").orEmpty()}\"")
     }
+    buildFeatures { buildConfig = true }
     val keys = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
     signingConfigs {
         if (keys != null) create("release") {
@@ -49,5 +53,4 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
-    implementation("com.anthropic:anthropic-java:2.34.0")
 }

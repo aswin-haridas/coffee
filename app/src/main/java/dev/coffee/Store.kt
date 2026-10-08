@@ -9,27 +9,22 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
-import com.anthropic.client.AnthropicClient
-import com.anthropic.client.okhttp.AnthropicOkHttpClient
-import com.anthropic.core.JsonValue
-import com.anthropic.errors.AnthropicServiceException
-import com.anthropic.errors.UnauthorizedException
-import com.anthropic.models.beta.messages.BetaStopReason
-import com.anthropic.models.beta.messages.MessageCreateParams
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import kotlin.jvm.optionals.getOrNull
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 
-const val DEFAULT_MODEL = "claude-opus-5-5"
+const val DEFAULT_MODEL = "openrouter/free"
 
 /** Text is snapshot state so a streaming token only invalidates its own Text, not the whole list. */
 class Msg(val user: Boolean, text: String, err: Boolean = false) {
@@ -69,7 +64,6 @@ object Store {
                 })
             }
         }
-        key.takeIf { it.isNotBlank() }?.let { k -> scope.launch(Dispatchers.IO) { Claude.warm(k) } }
     }
 
     operator fun get(k: String) = settings[k].orEmpty()
@@ -77,8 +71,8 @@ object Store {
         settings[k] = v
         prefs.edit().putString(k, v).apply()
     }
-    val key get() = this["key"]
-    val model get() = this["model"].ifBlank { DEFAULT_MODEL }
+    // OpenRouter ids are "vendor/model"; anything else is a stale Claude/Gemini id from older versions
+    val model get() = this["model"].takeIf { '/' in it } ?: DEFAULT_MODEL
 
     fun send(text: String) {
         val chat = current ?: Chat(System.currentTimeMillis(), text.take(60), emptyList()).also {
@@ -106,18 +100,14 @@ object Store {
         val history = chat.msgs.filter { !it.err && it.text.isNotBlank() }.map { it.user to it.text }
         val m = Msg(false, "")
         chat.msgs += m
-        val (key, model, system) = Triple(key, model, this["system"])
+        val (model, system) = model to this["system"]
         job = scope.launch {
             try {
-                Claude.stream(key, model, system, history).collect { m.text = it }
+                OpenRouter.stream(model, system, history).collect { m.text = it }
             } catch (_: CancellationException) {
                 // stopped by user; keep the partial text
             } catch (e: Exception) {
-                m.text += (if (m.text.isEmpty()) "" else "\n\n") + when (e) {
-                    is UnauthorizedException -> "Invalid API key. Update it in settings."
-                    is AnthropicServiceException -> "API error ${e.statusCode()}: ${e.message}"
-                    else -> e.message ?: "Network error"
-                }
+                m.text += (if (m.text.isEmpty()) "" else "\n\n") + (e.message ?: "Network error")
                 m.err = true
             } finally {
                 job = null
@@ -146,52 +136,54 @@ object Store {
     }
 }
 
-object Claude {
-    private var client: AnthropicClient? = null
-    private var clientKey: String? = null
+object OpenRouter {
+    private val url = URL("https://openrouter.ai/api/v1/chat/completions")
 
-    @Synchronized
-    private fun client(key: String): AnthropicClient {
-        if (key != clientKey) {
-            client?.close()
-            client = AnthropicOkHttpClient.builder().apiKey(key).build()
-            clientKey = key
-        }
-        return client!!
-    }
-
-    /** Builds the client and loads the JSON/param classes off the main thread so the first send is instant. */
-    fun warm(key: String) {
-        client(key)
-        params(DEFAULT_MODEL, "", listOf(true to "hi"))
-    }
-
-    private fun params(model: String, system: String, history: List<Pair<Boolean, String>>) =
-        MessageCreateParams.builder().model(model).maxTokens(64000L).apply {
-            // Fallbacks + effort are only accepted by the current Opus/Fable/Sonnet 5.5 line.
-            if (model.startsWith("claude-opus-5") || model.startsWith("claude-fable-5") || model == "claude-sonnet-5-5") {
-                addBeta("server-side-fallback-2026-07-01")
-                putAdditionalBodyProperty("fallbacks", JsonValue.from("default"))
-                putAdditionalBodyProperty("output_config", JsonValue.from(mapOf("effort" to "low")))
-            }
-            if (system.isNotBlank()) system(system)
-            history.forEach { (user, text) -> if (user) addUserMessage(text) else addAssistantMessage(text) }
-        }.build()
-
-    /** Emits the full accumulated reply; conflated so the UI renders at most one update per frame. */
-    fun stream(key: String, model: String, system: String, history: List<Pair<Boolean, String>>) = flow {
-        val sb = StringBuilder()
-        client(key).beta().messages().createStreaming(params(model, system, history)).use { s ->
-            for (e in s.stream().iterator()) {
-                e.contentBlockDelta().getOrNull()?.delta()?.text()?.getOrNull()?.let {
-                    sb.append(it.text())
-                    emit(sb.toString())
+    /**
+     * Streams an OpenAI-style chat completion and emits the full accumulated reply.
+     * Conflated so the UI renders at most one update per frame; cancelling disconnects the socket immediately.
+     */
+    fun stream(model: String, system: String, history: List<Pair<Boolean, String>>) = callbackFlow {
+        val conn = url.openConnection() as HttpURLConnection
+        launch(Dispatchers.IO) {
+            try {
+                val messages = JSONArray()
+                if (system.isNotBlank()) messages.put(JSONObject().put("role", "system").put("content", system))
+                history.forEach { (user, text) -> messages.put(JSONObject().put("role", if (user) "user" else "assistant").put("content", text)) }
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.OPENROUTER_KEY}")
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("X-Title", "Coffee")
+                conn.outputStream.use { it.write(JSONObject().put("model", model).put("stream", true).put("messages", messages).toString().toByteArray()) }
+                if (conn.responseCode !in 200..299) throw IOException(errorOf(conn.errorStream?.bufferedReader()?.readText(), conn.responseCode))
+                val sb = StringBuilder()
+                conn.inputStream.bufferedReader().useLines { lines ->
+                    for (line in lines) {
+                        if (!line.startsWith("data: ")) continue // blank separators and ": OPENROUTER PROCESSING" keep-alives
+                        val data = line.removePrefix("data: ")
+                        if (data == "[DONE]") break
+                        val o = JSONObject(data)
+                        if (o.has("error")) throw IOException(errorOf(data, 0))
+                        val text = o.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta")?.optString("content").orEmpty()
+                        if (text.isNotEmpty()) trySend(sb.append(text).toString())
+                    }
                 }
-                if (e.messageDelta().getOrNull()?.delta()?.stopReason()?.getOrNull() == BetaStopReason.REFUSAL) {
-                    sb.append(if (sb.isEmpty()) "Declined to answer." else "\n\n(Response stopped.)")
-                    emit(sb.toString())
-                }
+                if (sb.isEmpty()) trySend("No response.")
+                close()
+            } catch (e: Exception) {
+                close(e)
             }
         }
-    }.flowOn(Dispatchers.IO).conflate()
+        awaitClose { conn.disconnect() }
+    }.conflate()
+
+    private fun errorOf(body: String?, code: Int): String {
+        val msg = runCatching { JSONObject(body!!).getJSONObject("error").getString("message") }.getOrNull()
+        return when (code) {
+            401 -> "Invalid OpenRouter key."
+            429 -> "Free model is rate limited. Try again in a moment."
+            else -> "API error${if (code > 0) " $code" else ""}: ${msg ?: body ?: "unknown"}"
+        }
+    }
 }
