@@ -101,6 +101,16 @@ object Store {
         reply(chat)
     }
 
+    /** A check-in from the backend agent becomes a new chat, so replying to it keeps the context. */
+    fun nudge(ctx: Context, text: String): Chat {
+        init(ctx)
+        val id = maxOf(System.currentTimeMillis(), (chats.maxOfOrNull { it.id } ?: 0) + 1) // unique even for a batch
+        return Chat(id, text.take(60), listOf(Msg(false, text))).also {
+            chats.add(0, it)
+            save()
+        }
+    }
+
     fun regenerate(chat: Chat) {
         if (chat.msgs.lastOrNull()?.user == false) chat.msgs.removeAt(chat.msgs.lastIndex)
         reply(chat)
@@ -201,6 +211,20 @@ class Turn(val user: Boolean, val text: String, val image: String?)
 /** coffee-backend /v1/chat: holds the Gemini key and model, and lets the model use the notes and the other chats. */
 object Backend {
     private val url = URL("https://coffee.aswinharidas.uk/v1/chat")
+
+    /** Blocking; call off the main thread. Check-ins the agent has queued, cleared on the server once fetched. */
+    fun nudges(): List<String> {
+        val conn = URL("https://coffee.aswinharidas.uk/v1/nudges").openConnection() as HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 15_000
+        conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+        try {
+            val a = JSONObject(conn.inputStream.bufferedReader().readText()).getJSONArray("nudges")
+            return List(a.length()) { a.getString(it) }
+        } finally {
+            conn.disconnect()
+        }
+    }
 
     /**
      * Streams an OpenAI-style chat completion and emits the full accumulated reply.

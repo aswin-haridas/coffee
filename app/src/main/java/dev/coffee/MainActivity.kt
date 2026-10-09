@@ -1,9 +1,12 @@
 package dev.coffee
 
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.widget.Toast
@@ -121,6 +124,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(bars, bars)
         super.onCreate(savedInstanceState)
         Store.init(applicationContext)
+        if (savedInstanceState == null) intent.getLongExtra("chat", 0).let { id -> Store.chats.find { it.id == id }?.let { Store.current = it } }
+        NudgeJob.schedule(this)
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
+        }
         setContent {
             MaterialTheme(darkColorScheme(primary = Coral, background = Bg, surface = Raised, surfaceContainerHigh = Raised)) { App() }
         }
