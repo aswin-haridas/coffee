@@ -125,7 +125,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Store.init(applicationContext)
         if (savedInstanceState == null) intent.getLongExtra("chat", 0).let { id -> Store.chats.find { it.id == id }?.let { Store.current = it } }
-        NudgeJob.schedule(this)
+        PushService.start(this)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }

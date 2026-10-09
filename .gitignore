@@ -8,3 +8,4 @@ release.jks
 keystore.properties
 *.apk
 secrets.properties
+google-services.json

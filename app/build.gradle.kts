@@ -5,6 +5,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.gms.google-services") // reads app/google-services.json (gitignored) from the Firebase console
 }
 
 android {
@@ -14,8 +15,8 @@ android {
         applicationId = "dev.coffee"
         minSdk = 26
         targetSdk = 36
-        versionCode = 13
-        versionName = "1.8.1"
+        versionCode = 14
+        versionName = "1.9.0"
         // Key lives in gitignored secrets.properties so it never lands in the public repo.
         val secrets = rootProject.file("secrets.properties").takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
         buildConfigField("String", "CHAT_KEY", "\"${secrets?.getProperty("CHAT_KEY").orEmpty()}\"")
@@ -52,4 +53,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+    implementation(platform("com.google.firebase:firebase-bom:35.0.0"))
+    implementation("com.google.firebase:firebase-messaging")
 }

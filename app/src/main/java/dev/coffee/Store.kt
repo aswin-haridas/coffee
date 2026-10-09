@@ -212,7 +212,24 @@ class Turn(val user: Boolean, val text: String, val image: String?)
 object Backend {
     private val url = URL("https://coffee.aswinharidas.uk/v1/chat")
 
-    /** Blocking; call off the main thread. Check-ins the agent has queued, cleared on the server once fetched. */
+    /** Blocking; call off the main thread. Tells the server where to push check-ins. */
+    fun registerPush(token: String) {
+        val conn = URL("https://coffee.aswinharidas.uk/v1/push-token").openConnection() as HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 15_000
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.outputStream.use { it.write(JSONObject().put("token", token).toString().toByteArray()) }
+            if (conn.responseCode !in 200..299) throw IOException("push token: HTTP ${conn.responseCode}")
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Blocking; call off the main thread. Check-ins the server couldn't push, cleared there once fetched. */
     fun nudges(): List<String> {
         val conn = URL("https://coffee.aswinharidas.uk/v1/nudges").openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
