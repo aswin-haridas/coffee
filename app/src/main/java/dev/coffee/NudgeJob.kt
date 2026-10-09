@@ -16,9 +16,10 @@ import android.os.Looper
 import kotlin.concurrent.thread
 
 /**
- * Fetches check-ins from coffee-backend's agent (GET /v1/nudges) about every 30 minutes and shows each one
- * as a notification that opens its chat. Polling with JobScheduler rather than real push: no Firebase,
- * at the cost of check-ins arriving up to ~30 minutes late (longer while the phone dozes).
+ * Fetches check-ins from coffee-backend's agent (GET /v1/nudges) every POLL and shows each one as a
+ * notification that opens its chat. Polling with JobScheduler rather than real push: no Firebase, at the
+ * cost of check-ins arriving up to POLL late (longer while the phone dozes, which throttles jobs).
+ * Periodic jobs can't run more often than every 15 minutes, so each run schedules the next one-off job.
  */
 class NudgeJob : JobService() {
     override fun onStartJob(p: JobParameters): Boolean {
@@ -26,6 +27,8 @@ class NudgeJob : JobService() {
             val nudges = runCatching { Backend.nudges() }.getOrDefault(emptyList())
             main.post { // Store is Compose state, so it is only touched on the main thread
                 nudges.forEach { show(this, Store.nudge(applicationContext, it)) }
+                // Queue the next run under the other id first: this one still counts as pending until it finishes
+                enqueue(this, if (p.jobId == ID) ID + 1 else ID)
                 jobFinished(p, false)
             }
         }
@@ -36,14 +39,20 @@ class NudgeJob : JobService() {
 
     companion object {
         private const val ID = 1
+        private const val POLL = 60_000L // ponytail: 1 minute while testing; raise it to save battery
         private val main = Handler(Looper.getMainLooper())
 
-        /** Only when missing: rescheduling restarts the period, so frequent app launches would starve it. */
+        /**
+         * Only when no run is queued: rescheduling restarts the wait, so frequent app launches would starve it.
+         * A leftover periodic job from 1.8.0 is replaced.
+         */
         fun schedule(ctx: Context) {
-            val js = ctx.getSystemService(JobScheduler::class.java)
-            if (js.getPendingJob(ID) != null) return
-            js.schedule(JobInfo.Builder(ID, ComponentName(ctx, NudgeJob::class.java))
-                .setPeriodic(30 * 60 * 1000L)
+            if (ctx.getSystemService(JobScheduler::class.java).allPendingJobs.none { !it.isPeriodic }) enqueue(ctx, ID)
+        }
+
+        private fun enqueue(ctx: Context, id: Int) {
+            ctx.getSystemService(JobScheduler::class.java).schedule(JobInfo.Builder(id, ComponentName(ctx, NudgeJob::class.java))
+                .setMinimumLatency(POLL)
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .setPersisted(true)
                 .build())
