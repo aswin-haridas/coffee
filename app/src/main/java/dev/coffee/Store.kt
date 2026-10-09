@@ -31,11 +31,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 
-const val DEFAULT_MODEL = "openrouter/free"
-
 /**
- * Sent with every request. openrouter/free routes each call to a random free model, so this pins down
- * the voice and format rather than leaving it to whichever model answers. Replies render as plain text.
+ * Sent with every request to pin down the voice and format. Replies render as plain text.
  */
 private const val BASE_PROMPT = """You are Coffee, a helpful assistant in a mobile chat app.
 
@@ -94,8 +91,6 @@ object Store {
         settings[k] = v
         prefs.edit().putString(k, v).apply()
     }
-    // OpenRouter ids are "vendor/model"; anything else is a stale Claude/Gemini id from older versions
-    val model get() = this["model"].takeIf { '/' in it } ?: DEFAULT_MODEL
 
     fun send(text: String, image: String? = null) {
         val chat = current ?: Chat(System.currentTimeMillis(), text.ifBlank { "Image" }.take(60), emptyList()).also {
@@ -129,9 +124,17 @@ object Store {
             this@Store["name"].takeIf { it.isNotBlank() }?.let { append("\n\nThe user's name is $it.") }
             this@Store["system"].takeIf { it.isNotBlank() }?.let { append("\n\nThe user's own instructions, which take priority over the above:\n$it") }
         }
+        // ponytail: every other chat's text rides along on each request; send ids + search server-side if it gets heavy
+        val others = JSONArray().apply {
+            chats.filter { it !== chat }.forEach { c ->
+                put(JSONObject().put("id", c.id).put("title", c.title).put("messages", JSONArray().apply {
+                    c.msgs.filter { !it.err && it.text.isNotBlank() }.forEach { put(JSONObject().put("role", if (it.user) "user" else "assistant").put("content", it.text)) }
+                }))
+            }
+        }
         job = scope.launch {
             try {
-                OpenRouter.stream(model, system, history).collect { m.text = it }
+                Backend.stream(system, history, others).collect { m.text = it }
             } catch (_: CancellationException) {
                 // stopped by user; keep the partial text
             } catch (e: Exception) {
@@ -195,19 +198,19 @@ object Store {
 
 class Turn(val user: Boolean, val text: String, val image: String?)
 
-object OpenRouter {
-    private val url = URL("https://openrouter.ai/api/v1/chat/completions")
+/** coffee-backend /v1/chat: holds the Gemini key and model, and lets the model use the notes and the other chats. */
+object Backend {
+    private val url = URL("https://coffee.aswinharidas.uk/v1/chat")
 
     /**
      * Streams an OpenAI-style chat completion and emits the full accumulated reply.
      * Conflated so the UI renders at most one update per frame; cancelling disconnects the socket immediately.
      */
-    fun stream(model: String, system: String, history: List<Turn>) = callbackFlow {
+    fun stream(system: String, history: List<Turn>, chats: JSONArray) = callbackFlow {
         val conn = url.openConnection() as HttpURLConnection
         launch(Dispatchers.IO) {
             try {
                 val messages = JSONArray()
-                messages.put(JSONObject().put("role", "system").put("content", system))
                 history.forEach { t ->
                     val content: Any = if (t.image == null) t.text else JSONArray().apply {
                         if (t.text.isNotBlank()) put(JSONObject().put("type", "text").put("text", t.text))
@@ -218,15 +221,14 @@ object OpenRouter {
                 }
                 conn.requestMethod = "POST"
                 conn.doOutput = true
-                conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.OPENROUTER_KEY}")
+                conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
                 conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("X-Title", "Coffee")
-                conn.outputStream.use { it.write(JSONObject().put("model", model).put("stream", true).put("messages", messages).toString().toByteArray()) }
+                conn.outputStream.use { it.write(JSONObject().put("system", system).put("messages", messages).put("chats", chats).toString().toByteArray()) }
                 if (conn.responseCode !in 200..299) throw IOException(errorOf(conn.errorStream?.bufferedReader()?.readText(), conn.responseCode))
                 val sb = StringBuilder()
                 conn.inputStream.bufferedReader().useLines { lines ->
                     for (line in lines) {
-                        if (!line.startsWith("data: ")) continue // blank separators and ": OPENROUTER PROCESSING" keep-alives
+                        if (!line.startsWith("data: ")) continue // blank separators
                         val data = line.removePrefix("data: ")
                         if (data == "[DONE]") break
                         val o = JSONObject(data)
@@ -247,8 +249,8 @@ object OpenRouter {
     private fun errorOf(body: String?, code: Int): String {
         val msg = runCatching { JSONObject(body!!).getJSONObject("error").getString("message") }.getOrNull()
         return when (code) {
-            401 -> "Invalid OpenRouter key."
-            429 -> "Free model is rate limited. Try again in a moment."
+            401 -> "Invalid chat key."
+            429 -> "Rate limited. Try again in a moment."
             else -> "API error${if (code > 0) " $code" else ""}: ${msg ?: body ?: "unknown"}"
         }
     }

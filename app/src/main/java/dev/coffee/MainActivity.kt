@@ -307,9 +307,9 @@ private fun Assistant(chat: Chat, m: Msg, last: Boolean, live: Boolean) {
     val ctx = LocalContext.current
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         if (live && m.text.isEmpty()) {
-            // Figma "isLoading": a pulsing dot. Scale read inside graphicsLayer, so it animates without recomposing.
-            val pulse = rememberInfiniteTransition(label = "loading").animateFloat(.6f, 1f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "p")
-            Box(Modifier.padding(vertical = 6.dp).size(12.dp).graphicsLayer { scaleX = pulse.value; scaleY = pulse.value }.clip(CircleShape).background(Fg))
+            // Pulsing "Thinking…" label. Alpha read inside graphicsLayer, so it animates without recomposing.
+            val pulse = rememberInfiniteTransition(label = "loading").animateFloat(.4f, 1f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "p")
+            Text("Thinking…", color = Faint, fontSize = Body, lineHeight = 24.sp, modifier = Modifier.graphicsLayer { alpha = pulse.value })
         } else {
             SelectionContainer { Text(m.text, color = if (m.err) Color(0xFFFF8A80) else Fg, fontSize = Body, lineHeight = 24.sp) }
         }
@@ -439,9 +439,6 @@ private val Personal = listOf(
         Store["system"].lineSequence().first().ifBlank { "Custom instructions" }
     },
 )
-private val Account = listOf(
-    Field("model", "Model", R.drawable.ph_cpu, DEFAULT_MODEL) { Store.model },
-)
 
 @Composable
 private fun Profile(onBack: () -> Unit) {
@@ -462,8 +459,6 @@ private fun Profile(onBack: () -> Unit) {
             }
             Section("My Coffee")
             Group(Personal) { editing = it }
-            Section("Account")
-            Group(Account) { editing = it }
             Spacer(Modifier.height(24.dp))
         }
     }
