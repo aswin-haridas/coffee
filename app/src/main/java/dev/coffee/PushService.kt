@@ -50,8 +50,7 @@ class PushService : FirebaseMessagingService() {
             thread { runCatching { Backend.registerPush(token) } } // retried on the next launch if offline
         }
 
-        /** Coffee texting first: joins the chat and notifies. Main thread. */
-        fun checkIn(ctx: Context, text: String) {
+        private fun checkIn(ctx: Context, text: String) {
             Store.nudge(ctx.applicationContext, text)
             show(ctx, text)
         }
