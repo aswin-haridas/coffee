@@ -19,6 +19,7 @@ import kotlin.concurrent.thread
 /**
  * Check-ins from coffee-backend's agent arrive as Firebase data messages, which wake the app even when
  * it isn't running. Each one joins the chat, and the notification gathers them until the app is opened.
+ * Coffee's other messages (place check-ins, replies that land after you left) share that notification.
  */
 class PushService : FirebaseMessagingService() {
     override fun onNewToken(token: String) = register(token)
@@ -49,12 +50,18 @@ class PushService : FirebaseMessagingService() {
             thread { runCatching { Backend.registerPush(token) } } // retried on the next launch if offline
         }
 
-        private fun checkIn(ctx: Context, text: String) {
+        /** Coffee texting first: joins the chat and notifies. Main thread. */
+        fun checkIn(ctx: Context, text: String) {
             Store.nudge(ctx.applicationContext, text)
+            show(ctx, text)
+        }
+
+        /** Shows one of Coffee's messages, unless the chat is on screen. */
+        fun show(ctx: Context, text: String) {
             if (MainActivity.visible) return // it's already on screen in the chat
             val nm = ctx.getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(NotificationChannel("nudges", "Check-ins", NotificationManager.IMPORTANCE_DEFAULT))
-            // One conversation notification: check-ins not yet seen stack up in it, each in full
+            nm.createNotificationChannel(NotificationChannel("nudges", "Messages", NotificationManager.IMPORTANCE_DEFAULT))
+            // One conversation notification: messages not yet seen stack up in it, each in full
             val style = nm.activeNotifications.find { it.id == ID }?.let { NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(it.notification) }
                 ?: NotificationCompat.MessagingStyle(Person.Builder().setName("You").build())
             style.addMessage(text, System.currentTimeMillis(), Person.Builder().setName("Coffee").build())

@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Store.init(applicationContext)
         PushService.start(this)
+        if (Store[Places.KEY] == "on") { if (Places.permitted(this)) Places.start(this) else Store[Places.KEY] = "" } // revoked in system settings
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }
@@ -383,6 +384,9 @@ private val Personal = listOf(
     Field("system", "Personalization", R.drawable.ph_smiley, "Custom instructions for every chat") {
         Store["system"].lineSequence().first().ifBlank { "Custom instructions" }
     },
+    Field(Places.KEY, "Places", R.drawable.ph_map_pin, "") {
+        if (Store[Places.KEY] == "on") "Coffee texts when you're at a café, mall, shop…" else "Off"
+    },
 )
 
 @Composable
@@ -398,6 +402,28 @@ private fun Profile(onBack: () -> Unit) {
         }
     }
     fun pick() = picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+    var placesInfo by remember { mutableStateOf(false) }
+    fun placesOn() {
+        Store[Places.KEY] = "on"
+        Places.start(ctx)
+    }
+    val background = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) placesOn() else Toast.makeText(ctx, "Places needs location access all the time", Toast.LENGTH_LONG).show()
+    }
+    val foreground = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
+        when {
+            r[Manifest.permission.ACCESS_FINE_LOCATION] != true -> Toast.makeText(ctx, "Places needs precise location", Toast.LENGTH_LONG).show()
+            Build.VERSION.SDK_INT >= 29 -> background.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION) // asked on its own, after foreground
+            else -> placesOn()
+        }
+    }
+    fun togglePlaces() {
+        when {
+            Store[Places.KEY] == "on" -> { Store[Places.KEY] = ""; Places.stop(ctx) }
+            Places.permitted(ctx) -> placesOn()
+            else -> placesInfo = true
+        }
+    }
     Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         TopBar(nav = { IconButton(onBack) { Icon(painterResource(R.drawable.ph_arrow_left), "Back", tint = Fg) } }, title = "Settings")
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
@@ -419,7 +445,7 @@ private fun Profile(onBack: () -> Unit) {
                 }
             }
             Section("My Coffee")
-            Group(Personal) { editing = it }
+            Group(Personal) { if (it.key == Places.KEY) togglePlaces() else editing = it }
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -429,6 +455,26 @@ private fun Profile(onBack: () -> Unit) {
         title = { Text("Profile photo", color = Fg) },
         confirmButton = { TextButton({ photoMenu = false; pick() }) { Text("Change", color = Fg) } },
         dismissButton = { TextButton({ photoMenu = false; Store.setAvatar("") }) { Text("Remove", color = Muted) } },
+    )
+    if (placesInfo) AlertDialog(
+        onDismissRequest = { placesInfo = false },
+        containerColor = Raised,
+        title = { Text("Places", color = Fg) },
+        text = {
+            Text(
+                "Coffee checks your location in the background, even when the app is closed, and looks up the place on " +
+                    "OpenStreetMap (Overpass API). When you've been at a café, restaurant, mall or shop for a few minutes, Coffee texts you about it." +
+                    if (Build.VERSION.SDK_INT >= 30) "\n\nOn the next screens, allow precise location, then \"Allow all the time\"." else "",
+                color = Muted,
+            )
+        },
+        confirmButton = {
+            TextButton({
+                placesInfo = false
+                foreground.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            }) { Text("Continue", color = Fg) }
+        },
+        dismissButton = { TextButton({ placesInfo = false }) { Text("Cancel", color = Muted) } },
     )
     editing?.let { f ->
         var v by remember(f) { mutableStateOf(Store[f.key]) }
