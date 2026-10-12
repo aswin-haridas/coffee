@@ -1,6 +1,7 @@
 package dev.coffee
 
 import android.Manifest
+import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -22,26 +23,21 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -54,17 +50,13 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -79,13 +71,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.runtime.produceState
@@ -107,7 +100,6 @@ import kotlinx.coroutines.launch
 // Dark tokens from the official "Apps in ChatGPT" Figma (Foundations / Color).
 private val Bg = Color(0xFF212121)       // background primary
 private val Raised = Color(0xFF303030)   // background secondary: bubbles, composer, cards
-private val Pressed = Color(0xFF414141)  // background tertiary: selected rows
 private val Fg = Color(0xFFFFFFFF)       // text primary
 private val Muted = Color(0xFFCDCDCD)    // text secondary
 private val Faint = Color(0xFFAFAFAF)    // text tertiary: placeholders, labels, quiet icons
@@ -124,7 +116,6 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(bars, bars)
         super.onCreate(savedInstanceState)
         Store.init(applicationContext)
-        if (savedInstanceState == null) intent.getLongExtra("chat", 0).let { id -> Store.chats.find { it.id == id }?.let { Store.current = it } }
         PushService.start(this)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
@@ -133,26 +124,29 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(darkColorScheme(primary = Coral, background = Bg, surface = Raised, surfaceContainerHigh = Raised)) { App() }
         }
     }
+
+    // While the chat is on screen, check-ins just appear in it; opening the app clears their notification.
+    override fun onResume() {
+        super.onResume()
+        visible = true
+        getSystemService(NotificationManager::class.java).cancel(PushService.ID)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        visible = false
+    }
+
+    companion object {
+        var visible = false
+    }
 }
 
 @Composable
 private fun App() {
     var profile by rememberSaveable { mutableStateOf(false) }
-    val drawer = rememberDrawerState(DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
     BackHandler(profile) { profile = false }
-    if (profile) {
-        Profile { profile = false }
-    } else {
-        ModalNavigationDrawer(drawerState = drawer, drawerContent = {
-            Drawer(
-                onPick = { Store.current = it; scope.launch { drawer.close() } },
-                onProfile = { scope.launch { drawer.snapTo(DrawerValue.Closed) }; profile = true },
-            )
-        }) {
-            ChatScreen(onMenu = { scope.launch { drawer.open() } })
-        }
-    }
+    if (profile) Profile { profile = false } else ChatScreen(onProfile = { profile = true })
     UpdatePrompt()
 }
 
@@ -196,9 +190,8 @@ private fun TopBar(nav: @Composable () -> Unit, title: String, actions: @Composa
     }
 
 @Composable
-private fun ChatScreen(onMenu: () -> Unit) {
+private fun ChatScreen(onProfile: () -> Unit) {
     val ctx = LocalContext.current
-    val chat = Store.current
     val streaming = Store.job != null
     var input by rememberSaveable { mutableStateOf("") }
     var image by rememberSaveable { mutableStateOf<String?>(null) }
@@ -212,7 +205,7 @@ private fun ChatScreen(onMenu: () -> Unit) {
     var autoSend by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
-    val listState = remember(chat?.id) { LazyListState() }
+    val listState = remember { LazyListState() }
 
     fun send(text: String) {
         if (text.isBlank() && image == null) return
@@ -236,11 +229,9 @@ private fun ChatScreen(onMenu: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
-        TopBar(nav = { IconButton(onMenu) { Icon(painterResource(R.drawable.ph_list), "Menu", tint = Fg) } }, title = "Coffee") {
-            IconButton({ Store.current = null }) { Icon(painterResource(R.drawable.ph_note_pencil), "New chat", tint = Fg) }
-        }
+        TopBar(nav = { IconButton(onProfile, Modifier.semantics { contentDescription = "Settings" }) { Avatar(30.dp, 12.sp) } }, title = "Coffee")
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (chat == null || chat.msgs.isEmpty()) {
+            if (Store.msgs.isEmpty()) {
                 Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 8.dp, vertical = 4.dp)) {
                     listOf(
                         Triple(R.drawable.ph_pencil_simple, "Write or edit", "Help me write "),
@@ -261,7 +252,7 @@ private fun ChatScreen(onMenu: () -> Unit) {
                     }
                 }
             } else {
-                Messages(chat, streaming, listState)
+                Messages(streaming, listState)
             }
         }
         Composer(
@@ -274,18 +265,8 @@ private fun ChatScreen(onMenu: () -> Unit) {
 }
 
 @Composable
-private fun DeleteDialog(chat: Chat, onDone: () -> Unit) = AlertDialog(
-    onDismissRequest = onDone,
-    containerColor = Raised,
-    title = { Text("Delete chat?", color = Fg) },
-    text = { Text(chat.title, color = Muted, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-    confirmButton = { TextButton({ Store.delete(chat); onDone() }) { Text("Delete", color = Color(0xFFFF8A80)) } },
-    dismissButton = { TextButton(onDone) { Text("Cancel", color = Fg) } },
-)
-
-@Composable
-private fun Messages(chat: Chat, streaming: Boolean, listState: LazyListState) {
-    val msgs = chat.msgs
+private fun Messages(streaming: Boolean, listState: LazyListState) {
+    val msgs = Store.msgs
     LaunchedEffect(msgs.size) { listState.animateScrollToItem(0) }
     // reverseLayout pins the list to the bottom, so streaming text grows upward with no scroll bookkeeping
     LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
@@ -304,14 +285,15 @@ private fun Messages(chat: Chat, streaming: Boolean, listState: LazyListState) {
                     }
                 }
             } else {
-                Assistant(chat, m, last, streaming && last)
+                // Regenerating a check-in would replace it with a reply to an older message
+                Assistant(m, canRedo = last && msgs.getOrNull(i - 1)?.user == true, live = streaming && last)
             }
         }
     }
 }
 
 @Composable
-private fun Assistant(chat: Chat, m: Msg, last: Boolean, live: Boolean) {
+private fun Assistant(m: Msg, canRedo: Boolean, live: Boolean) {
     val ctx = LocalContext.current
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         if (live && m.text.isEmpty()) {
@@ -326,7 +308,7 @@ private fun Assistant(chat: Chat, m: Msg, last: Boolean, live: Boolean) {
                 IconButton({
                     ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("reply", m.text))
                 }, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_copy), "Copy", tint = Faint, modifier = Modifier.size(16.dp)) }
-                if (last) IconButton({ Store.regenerate(chat) }, Modifier.size(32.dp)) {
+                if (canRedo) IconButton(Store::regenerate, Modifier.size(32.dp)) {
                     Icon(painterResource(R.drawable.ph_arrow_clockwise), "Regenerate", tint = Faint, modifier = Modifier.size(16.dp))
                 }
             }
@@ -388,55 +370,6 @@ private fun Composer(
         }
     }
     }
-}
-
-/** Figma "Sidebar": search pill + new chat, "Chats" label, 48dp rows; profile row pinned at the bottom. */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun Drawer(onPick: (Chat?) -> Unit, onProfile: () -> Unit) {
-    var query by remember { mutableStateOf("") }
-    var deleting by remember { mutableStateOf<Chat?>(null) }
-    ModalDrawerSheet(Modifier.fillMaxWidth(.8f), drawerShape = RectangleShape, drawerContainerColor = Bg, windowInsets = WindowInsets(0)) {
-        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Row(
-                    Modifier.weight(1f).height(44.dp).clip(CircleShape).background(Raised).padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(painterResource(R.drawable.ph_magnifying_glass), null, tint = Faint, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(10.dp))
-                    BasicTextField(
-                        query, { query = it }, Modifier.weight(1f),
-                        textStyle = TextStyle(Fg, Body), cursorBrush = SolidColor(Fg), singleLine = true,
-                        decorationBox = { inner -> Box { if (query.isEmpty()) Text("Search", color = Faint, fontSize = Body); inner() } },
-                    )
-                }
-                IconButton({ onPick(null) }) { Icon(painterResource(R.drawable.ph_note_pencil), "New chat", tint = Fg) }
-            }
-            val list = if (query.isBlank()) Store.chats else Store.chats.filter { it.title.contains(query, true) }
-            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                if (list.isNotEmpty()) item { Text("Chats", color = Faint, fontSize = Small, modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp)) }
-                items(list, key = { it.id }) { c ->
-                    Box(
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
-                            .background(if (c === Store.current) Pressed else Color.Transparent)
-                            .combinedClickable(onLongClick = { deleting = c }) { onPick(c) }
-                            .padding(horizontal = 12.dp),
-                        contentAlignment = Alignment.CenterStart,
-                    ) { Text(c.title, color = Fg, fontSize = Body, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                }
-            }
-            Row(
-                Modifier.fillMaxWidth().padding(8.dp).heightIn(min = 52.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onProfile).padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Avatar(32.dp, 13.sp)
-                Spacer(Modifier.width(12.dp))
-                Text(Store["name"].ifBlank { "Settings" }, color = Fg, fontSize = Body, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-    }
-    deleting?.let { c -> DeleteDialog(c) { deleting = null } }
 }
 
 private class Field(val key: String, val title: String, val icon: Int, val hint: String, val sub: () -> String)

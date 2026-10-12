@@ -14,7 +14,6 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.toMutableStateList
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -31,32 +30,15 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 
-/**
- * Sent with every request to pin down the voice and format. Replies render as plain text.
- */
-private const val BASE_PROMPT = """You are Coffee, a helpful assistant in a mobile chat app.
-
-Reply like a thoughtful person texting a friend: natural, warm and direct.
-- Lead with the answer. No preamble, no restating the question, no "Great question" or "Sure!".
-- Keep it short. One to three sentences is usually enough; go longer only when the question truly needs detail or the user asks for it.
-- Write plain text. The app does not render markdown, so never use headings, bold, italics, tables or code fences. Use a simple numbered or dashed list only when steps or options are genuinely clearer that way.
-- Don't mention being an AI, a language model, your training or your model name unless asked. Don't add disclaimers or a closing offer to help more.
-- If something is unclear, ask one short question instead of guessing.
-- Match the user's language and tone."""
-
-/** Text is snapshot state so a streaming token only invalidates its own Text, not the whole list. */
-class Msg(val user: Boolean, text: String, err: Boolean = false, val image: String? = null) {
+/** Text is snapshot state so a streaming token only invalidates its own Text, not the whole list. [t] is when it was sent, epoch ms. */
+class Msg(val user: Boolean, text: String, err: Boolean = false, val image: String? = null, val t: Long = System.currentTimeMillis()) {
     var text by mutableStateOf(text)
     var err by mutableStateOf(err)
 }
 
-class Chat(val id: Long, val title: String, msgs: List<Msg>) {
-    val msgs = msgs.toMutableStateList()
-}
-
 object Store {
-    val chats = mutableStateListOf<Chat>()
-    var current by mutableStateOf<Chat?>(null)
+    /** The one ongoing chat, oldest first. Check-ins from the backend agent are Coffee's messages in it. */
+    val msgs = mutableStateListOf<Msg>()
     var job by mutableStateOf<Job?>(null)
         private set
     private val scope = MainScope()
@@ -70,20 +52,23 @@ object Store {
         if (::file.isInitialized) return
         prefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
         prefs.all.forEach { (k, v) -> settings[k] = v.toString() }
-        file = AtomicFile(File(ctx.filesDir, "chats.json"))
+        file = AtomicFile(File(ctx.filesDir, "thread.json"))
         images = File(ctx.filesDir, "images").apply { mkdirs() }
         // ponytail: whole history read on main thread at startup, move to IO if it ever grows past a few MB
-        runCatching {
-            val arr = JSONArray(String(file.readFully()))
-            for (i in 0 until arr.length()) {
-                val c = arr.getJSONObject(i)
-                val m = c.getJSONArray("m")
-                chats += Chat(c.getLong("id"), c.getString("t"), List(m.length()) {
-                    val o = m.getJSONObject(it)
-                    Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"), o.optString("i").ifEmpty { null })
-                })
+        runCatching { msgs += parse(JSONArray(String(file.readFully()))) }.onFailure {
+            // Before 1.10 every chat was separate (chats.json, newest first). They merge into the one chat,
+            // oldest first, each message dated by its chat's start; the old file stays as a backup.
+            runCatching {
+                val old = JSONArray(String(AtomicFile(File(ctx.filesDir, "chats.json")).readFully()))
+                msgs += List(old.length()) { old.getJSONObject(it) }.sortedBy { it.getLong("id") }.flatMap { parse(it.getJSONArray("m"), it.getLong("id")) }
+                save()
             }
         }
+    }
+
+    private fun parse(m: JSONArray, t: Long = 0) = List(m.length()) {
+        val o = m.getJSONObject(it)
+        Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"), o.optString("i").ifEmpty { null }, o.optLong("t", t))
     }
 
     operator fun get(k: String) = settings[k].orEmpty()
@@ -93,58 +78,36 @@ object Store {
     }
 
     fun send(text: String, image: String? = null) {
-        val chat = current ?: Chat(System.currentTimeMillis(), text.ifBlank { "Image" }.take(60), emptyList()).also {
-            chats.add(0, it)
-            current = it
-        }
-        chat.msgs += Msg(true, text, image = image)
-        reply(chat)
+        msgs += Msg(true, text, image = image)
+        reply()
     }
 
-    /** A check-in from the backend agent becomes a new chat, so replying to it keeps the context. */
-    fun nudge(ctx: Context, text: String): Chat {
+    /** A check-in from the backend agent: Coffee texting first, in the same chat. */
+    fun nudge(ctx: Context, text: String) {
         init(ctx)
-        val id = maxOf(System.currentTimeMillis(), (chats.maxOfOrNull { it.id } ?: 0) + 1) // unique even for a batch
-        return Chat(id, text.take(60), listOf(Msg(false, text))).also {
-            chats.add(0, it)
-            save()
-        }
+        msgs += Msg(false, text)
+        save()
     }
 
-    fun regenerate(chat: Chat) {
-        if (chat.msgs.lastOrNull()?.user == false) chat.msgs.removeAt(chat.msgs.lastIndex)
-        reply(chat)
+    fun regenerate() {
+        if (msgs.lastOrNull()?.user == false) msgs.removeAt(msgs.lastIndex)
+        reply()
     }
 
     fun stop() = job?.cancel()
 
-    fun delete(chat: Chat) {
-        chats.remove(chat)
-        chat.msgs.forEach { m -> m.image?.let { File(it).delete() } }
-        if (current === chat) current = null
-        save()
-    }
-
-    private fun reply(chat: Chat) {
-        val history = chat.msgs.filter { !it.err && (it.text.isNotBlank() || it.image != null) }.map { Turn(it.user, it.text, it.image) }
+    /** The persona and reply rules live on the server; the app only sends the user's own settings. */
+    private fun reply() {
+        val history = msgs.filter { !it.err && (it.text.isNotBlank() || it.image != null) }.map { Turn(it.user, it.text, it.image, it.t) }
         val m = Msg(false, "")
-        chat.msgs += m
-        val system = buildString {
-            append(BASE_PROMPT)
-            this@Store["name"].takeIf { it.isNotBlank() }?.let { append("\n\nThe user's name is $it.") }
-            this@Store["system"].takeIf { it.isNotBlank() }?.let { append("\n\nThe user's own instructions, which take priority over the above:\n$it") }
-        }
-        // ponytail: every other chat's text rides along on each request; send ids + search server-side if it gets heavy
-        val others = JSONArray().apply {
-            chats.filter { it !== chat }.forEach { c ->
-                put(JSONObject().put("id", c.id).put("title", c.title).put("messages", JSONArray().apply {
-                    c.msgs.filter { !it.err && it.text.isNotBlank() }.forEach { put(JSONObject().put("role", if (it.user) "user" else "assistant").put("content", it.text)) }
-                }))
-            }
-        }
+        msgs += m
+        val system = listOfNotNull(
+            this["name"].takeIf { it.isNotBlank() }?.let { "The user's name is $it." },
+            this["system"].takeIf { it.isNotBlank() }?.let { "Their own instructions for you:\n$it" },
+        ).joinToString("\n\n")
         job = scope.launch {
             try {
-                Backend.stream(system, history, others).collect { m.text = it }
+                Backend.stream(system, history).collect { m.text = it }
             } catch (_: CancellationException) {
                 // stopped by user; keep the partial text
             } catch (e: Exception) {
@@ -159,11 +122,7 @@ object Store {
 
     private fun save() {
         val json = JSONArray().apply {
-            chats.forEach { c ->
-                put(JSONObject().put("id", c.id).put("t", c.title).put("m", JSONArray().apply {
-                    c.msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err).put("i", it.image)) }
-                }))
-            }
+            msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err).put("i", it.image).put("t", it.t)) }
         }.toString()
         scope.launch(io) {
             val out = file.startWrite()
@@ -206,9 +165,9 @@ object Store {
     }.getOrNull()
 }
 
-class Turn(val user: Boolean, val text: String, val image: String?)
+class Turn(val user: Boolean, val text: String, val image: String?, val t: Long)
 
-/** coffee-backend /v1/chat: holds the Gemini key and model, and lets the model use the notes and the other chats. */
+/** coffee-backend /v1/chat: holds the model keys, the prompt and the notes; shows the model the newest part of the chat. */
 object Backend {
     private val url = URL("https://coffee.aswinharidas.uk/v1/chat")
 
@@ -247,24 +206,25 @@ object Backend {
      * Streams an OpenAI-style chat completion and emits the full accumulated reply.
      * Conflated so the UI renders at most one update per frame; cancelling disconnects the socket immediately.
      */
-    fun stream(system: String, history: List<Turn>, chats: JSONArray) = callbackFlow {
+    fun stream(system: String, history: List<Turn>) = callbackFlow {
         val conn = url.openConnection() as HttpURLConnection
         launch(Dispatchers.IO) {
             try {
                 val messages = JSONArray()
-                history.forEach { t ->
-                    val content: Any = if (t.image == null) t.text else JSONArray().apply {
+                history.forEachIndexed { i, t ->
+                    // Photos ride along only on the newest messages: older ones were already talked about, and each is ~150 KB.
+                    val content: Any = if (t.image == null || i < history.size - 10) (if (t.image != null) "[photo] " else "") + t.text else JSONArray().apply {
                         if (t.text.isNotBlank()) put(JSONObject().put("type", "text").put("text", t.text))
                         val b64 = Base64.encodeToString(File(t.image).readBytes(), Base64.NO_WRAP)
                         put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$b64")))
                     }
-                    messages.put(JSONObject().put("role", if (t.user) "user" else "assistant").put("content", content))
+                    messages.put(JSONObject().put("role", if (t.user) "user" else "assistant").put("content", content).put("t", t.t))
                 }
                 conn.requestMethod = "POST"
                 conn.doOutput = true
                 conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
                 conn.setRequestProperty("Content-Type", "application/json")
-                conn.outputStream.use { it.write(JSONObject().put("system", system).put("messages", messages).put("chats", chats).toString().toByteArray()) }
+                conn.outputStream.use { it.write(JSONObject().put("system", system).put("messages", messages).toString().toByteArray()) }
                 if (conn.responseCode !in 200..299) throw IOException(errorOf(conn.errorStream?.bufferedReader()?.readText(), conn.responseCode))
                 val sb = StringBuilder()
                 conn.inputStream.bufferedReader().useLines { lines ->
