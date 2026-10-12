@@ -107,12 +107,16 @@ object Store {
 
     /** The persona and reply rules live on the server; the app only sends the user's own settings. */
     private fun reply() {
-        val history = turns()
+        val history = msgs.filter { !it.err && (it.text.isNotBlank() || it.image != null) }.map { Turn(it.user, it.text, it.image, it.t) }
         val m = Msg(false, "")
         msgs += m
+        val system = listOfNotNull(
+            this["name"].takeIf { it.isNotBlank() }?.let { "The user's name is $it." },
+            this["system"].takeIf { it.isNotBlank() }?.let { "Their own instructions for you:\n$it" },
+        ).joinToString("\n\n")
         job = scope.launch {
             try {
-                Backend.stream(system(), history).collect { m.text = it }
+                Backend.stream(system, history).collect { m.text = it }
             } catch (_: CancellationException) {
                 // stopped by user; keep the partial text
             } catch (e: Exception) {
@@ -125,20 +129,6 @@ object Store {
             }
         }
     }
-
-    /** Coffee texting first: the reply to [note], a user turn that is sent but never shown or kept. Main thread; throws on failure. */
-    suspend fun prompted(note: String): String {
-        var out = ""
-        Backend.stream(system(), turns() + Turn(true, note, null, System.currentTimeMillis())).collect { out = it }
-        return out
-    }
-
-    private fun turns() = msgs.filter { !it.err && (it.text.isNotBlank() || it.image != null) }.map { Turn(it.user, it.text, it.image, it.t) }
-
-    private fun system() = listOfNotNull(
-        this["name"].takeIf { it.isNotBlank() }?.let { "The user's name is $it." },
-        this["system"].takeIf { it.isNotBlank() }?.let { "Their own instructions for you:\n$it" },
-    ).joinToString("\n\n")
 
     private fun save() {
         val json = JSONArray().apply {
@@ -203,6 +193,26 @@ object Backend {
             conn.setRequestProperty("Content-Type", "application/json")
             conn.outputStream.use { it.write(JSONObject().put("token", token).toString().toByteArray()) }
             if (conn.responseCode !in 200..299) throw IOException("push token: HTTP ${conn.responseCode}")
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Blocking; call off the main thread. Sends location fixes, a JSON array of {lat, lon, accuracy, t}, to be kept in
+     * Postgres and turned into place texts. True when the server took them (or rejected them as malformed); throws when offline.
+     */
+    fun uploadFixes(fixes: String): Boolean {
+        val conn = URL("https://coffee.aswinharidas.uk/v1/locations").openConnection() as HttpURLConnection
+        conn.connectTimeout = 10_000
+        conn.readTimeout = 15_000
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.outputStream.use { it.write("{\"fixes\":$fixes}".toByteArray()) }
+            return conn.responseCode in 200..299 || conn.responseCode == 400
         } finally {
             conn.disconnect()
         }

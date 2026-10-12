@@ -462,8 +462,9 @@ private fun Profile(onBack: () -> Unit) {
         title = { Text("Places", color = Fg) },
         text = {
             Text(
-                "Coffee checks your location in the background, even when the app is closed, and looks up the place on " +
-                    "OpenStreetMap (Overpass API). When you've been at a café, restaurant, mall or shop for a few minutes, Coffee texts you about it." +
+                "Coffee checks your location in the background, even when the app is closed, and sends it to your Coffee server, " +
+                    "which keeps your location history and looks up the place on OpenStreetMap. When you've been at a café, restaurant, " +
+                    "mall or shop for a few minutes, Coffee texts you about it." +
                     if (Build.VERSION.SDK_INT >= 30) "\n\nOn the next screens, allow precise location, then \"Allow all the time\"." else "",
                 color = Muted,
             )
