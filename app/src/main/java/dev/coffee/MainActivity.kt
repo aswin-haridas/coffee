@@ -173,11 +173,15 @@ private fun UpdatePrompt() {
     )
 }
 
+/** The user's photo if they set one, else their initials. */
 @Composable
-private fun Avatar(size: Dp, font: TextUnit) =
-    Box(Modifier.size(size).clip(CircleShape).background(Teal), contentAlignment = Alignment.Center) {
-        val initials = Store["name"].split(' ').filter { it.isNotBlank() }.take(2).joinToString("") { it.take(1).uppercase() }
-        Text(initials.ifEmpty { "?" }, color = Color.White, fontSize = font)
+private fun Avatar(size: Dp, font: TextUnit, modifier: Modifier = Modifier) =
+    Box(modifier.size(size).clip(CircleShape).background(Teal), contentAlignment = Alignment.Center) {
+        val photo = Store["avatar"]
+        if (photo.isNotBlank()) Thumb(photo, Modifier.fillMaxSize()) else {
+            val initials = Store["name"].split(' ').filter { it.isNotBlank() }.take(2).joinToString("") { it.take(1).uppercase() }
+            Text(initials.ifEmpty { "?" }, color = Color.White, fontSize = font)
+        }
     }
 
 /** Flat 56dp app bar: nav icon, title, trailing actions. */
@@ -383,7 +387,17 @@ private val Personal = listOf(
 
 @Composable
 private fun Profile(onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf<Field?>(null) }
+    var photoMenu by remember { mutableStateOf(false) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            val path = withContext(Dispatchers.IO) { Store.saveImage(ctx, uri) }
+            if (path == null) Toast.makeText(ctx, "Couldn't read that image", Toast.LENGTH_SHORT).show() else Store.setAvatar(path)
+        }
+    }
+    fun pick() = picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         TopBar(nav = { IconButton(onBack) { Icon(painterResource(R.drawable.ph_arrow_left), "Back", tint = Fg) } }, title = "Settings")
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
@@ -391,7 +405,13 @@ private fun Profile(onBack: () -> Unit) {
                 Modifier.fillMaxWidth().padding(vertical = 8.dp).clip(RoundedCornerShape(12.dp)).clickable { editing = NameField }.padding(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Avatar(56.dp, 22.sp)
+                Box {
+                    Avatar(56.dp, 22.sp, Modifier.clickable { if (Store["avatar"].isBlank()) pick() else photoMenu = true }.semantics { contentDescription = "Profile photo" })
+                    Box(
+                        Modifier.align(Alignment.BottomEnd).size(20.dp).clip(CircleShape).background(Raised).border(2.dp, Bg, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(painterResource(R.drawable.ph_pencil_simple), null, tint = Fg, modifier = Modifier.size(11.dp)) }
+                }
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
                     Text(Store["name"].ifBlank { "Add your name" }, color = Fg, fontSize = Title, fontWeight = FontWeight.SemiBold)
@@ -403,6 +423,13 @@ private fun Profile(onBack: () -> Unit) {
             Spacer(Modifier.height(24.dp))
         }
     }
+    if (photoMenu) AlertDialog(
+        onDismissRequest = { photoMenu = false },
+        containerColor = Raised,
+        title = { Text("Profile photo", color = Fg) },
+        confirmButton = { TextButton({ photoMenu = false; pick() }) { Text("Change", color = Fg) } },
+        dismissButton = { TextButton({ photoMenu = false; Store.setAvatar("") }) { Text("Remove", color = Muted) } },
+    )
     editing?.let { f ->
         var v by remember(f) { mutableStateOf(Store[f.key]) }
         val multi = f.key == "system"

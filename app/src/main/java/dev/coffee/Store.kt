@@ -77,6 +77,13 @@ object Store {
         prefs.edit().putString(k, v).apply()
     }
 
+    /** Swaps the profile photo (a path from [saveImage], or "" for initials) and deletes the old file. */
+    fun setAvatar(path: String) {
+        val old = this["avatar"]
+        this["avatar"] = path
+        if (old.isNotBlank() && old != path) scope.launch(io) { File(old).delete() }
+    }
+
     fun send(text: String, image: String? = null) {
         msgs += Msg(true, text, image = image)
         reply()
