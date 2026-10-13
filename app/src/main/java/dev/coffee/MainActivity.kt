@@ -387,6 +387,10 @@ private val Personal = listOf(
     Field(Places.KEY, "Places", R.drawable.ph_map_pin, "") {
         if (Store[Places.KEY] == "on") "Coffee texts when you're at a café, mall, shop…" else "Off"
     },
+    Field("spots", "Home & office", R.drawable.ph_wifi_high, "") {
+        val saved = listOf("home", "office").filter { Store["spot_$it"] == "on" }
+        if (saved.isEmpty()) "Recognise them by their Wi-Fi" else saved.joinToString(" and ").replaceFirstChar { it.uppercase() } + " saved"
+    },
 )
 
 @Composable
@@ -403,6 +407,17 @@ private fun Profile(onBack: () -> Unit) {
     }
     fun pick() = picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     var placesInfo by remember { mutableStateOf(false) }
+    var spots by remember { mutableStateOf(false) }
+    fun saveSpot(name: String) {
+        spots = false
+        val wifi = Places.wifi(ctx)
+        if (wifi.isEmpty()) return Toast.makeText(ctx, "No Wi-Fi networks nearby. Turn on Wi-Fi and try again in a minute", Toast.LENGTH_LONG).show()
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) { runCatching { Backend.setSpot(name, wifi) }.isSuccess }
+            if (ok) Store["spot_$name"] = "on"
+            Toast.makeText(ctx, if (ok) "Saved ${wifi.size} networks as $name" else "Couldn't reach your Coffee server", Toast.LENGTH_SHORT).show()
+        }
+    }
     fun placesOn() {
         Store[Places.KEY] = "on"
         Places.start(ctx)
@@ -445,7 +460,13 @@ private fun Profile(onBack: () -> Unit) {
                 }
             }
             Section("My Coffee")
-            Group(Personal) { if (it.key == Places.KEY) togglePlaces() else editing = it }
+            Group(Personal.filter { it.key != "spots" || Store[Places.KEY] == "on" }) {
+                when (it.key) {
+                    Places.KEY -> togglePlaces()
+                    "spots" -> spots = true
+                    else -> editing = it
+                }
+            }
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -476,6 +497,25 @@ private fun Profile(onBack: () -> Unit) {
             }) { Text("Continue", color = Fg) }
         },
         dismissButton = { TextButton({ placesInfo = false }) { Text("Cancel", color = Muted) } },
+    )
+    if (spots) AlertDialog(
+        onDismissRequest = { spots = false },
+        containerColor = Raised,
+        title = { Text("Home & office", color = Fg) },
+        text = {
+            Text(
+                "Saves the Wi-Fi networks around you right now, so Coffee knows you're there even when GPS can't tell. " +
+                    "Do it once at each place; saving again replaces what was saved.",
+                color = Muted,
+            )
+        },
+        confirmButton = {
+            Row {
+                TextButton({ saveSpot("home") }) { Text("I'm home", color = Fg) }
+                TextButton({ saveSpot("office") }) { Text("I'm at the office", color = Fg) }
+            }
+        },
+        dismissButton = { TextButton({ spots = false }) { Text("Cancel", color = Muted) } },
     )
     editing?.let { f ->
         var v by remember(f) { mutableStateOf(Store[f.key]) }

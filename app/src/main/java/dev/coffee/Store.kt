@@ -218,6 +218,23 @@ object Backend {
         }
     }
 
+    /** Blocking; call off the main thread. Saves [bssids] as the Wi-Fi networks at [spot], "home" or "office"; throws on failure. */
+    fun setSpot(spot: String, bssids: List<String>) {
+        val conn = URL("https://coffee.aswinharidas.uk/v1/spots/$spot").openConnection() as HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 15_000
+        try {
+            conn.requestMethod = "PUT"
+            conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.outputStream.use { it.write(JSONObject().put("wifi", JSONArray(bssids)).toString().toByteArray()) }
+            if (conn.responseCode !in 200..299) throw IOException("spot: HTTP ${conn.responseCode}")
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     /** Blocking; call off the main thread. Check-ins the server couldn't push, cleared there once fetched. */
     fun nudges(): List<String> {
         val conn = URL("https://coffee.aswinharidas.uk/v1/nudges").openConnection() as HttpURLConnection

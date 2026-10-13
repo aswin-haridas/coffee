@@ -8,7 +8,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
+import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.SystemClock
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
@@ -21,7 +23,8 @@ import kotlin.concurrent.thread
  * Coffee notices where you are. Fixes from the fused provider (GPS plus Wi-Fi) go to coffee-backend, which keeps
  * them in Postgres, matches them against OpenStreetMap, and once you've settled at a café, mall, shop… pushes
  * Coffee's text about it like any check-in. Android hands background apps a fix only a few times an hour, so
- * that's the pace. Fixes that can't be sent wait here and go with the next upload.
+ * that's the pace. Fixes that can't be sent wait here and go with the next upload. The newest fix also carries the
+ * Wi-Fi networks around it, which is how the server knows home and office (saved with [wifi] from Settings).
  */
 object Places {
     /** Store setting: "on" once the user turned it on and granted location all the time. */
@@ -52,10 +55,26 @@ object Places {
         ctx, 0, Intent(ctx, PlaceReceiver::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
     )
 
+    /**
+     * BSSIDs from the phone's last Wi-Fi scan, if it was within 2 minutes of [atNanos] (elapsed realtime). Android scans
+     * on its own, often for location itself, so this costs nothing; empty with Wi-Fi off or no recent scan.
+     */
+    @SuppressLint("MissingPermission")
+    fun wifi(ctx: Context, atNanos: Long = SystemClock.elapsedRealtimeNanos()): List<String> {
+        if (!permitted(ctx)) return emptyList()
+        val scan = runCatching { ctx.getSystemService(WifiManager::class.java).scanResults }.getOrNull().orEmpty()
+        return scan.filter { kotlin.math.abs(it.timestamp * 1000 - atNanos) < 120_000_000_000L }.map { it.BSSID }.distinct()
+    }
+
     fun queue(ctx: Context, fixes: List<Location>) = synchronized(lock) {
         val p = ctx.getSharedPreferences("places", Context.MODE_PRIVATE)
         val q = runCatching { JSONArray(p.getString("queue", "[]")) }.getOrDefault(JSONArray())
-        fixes.forEach { q.put(JSONObject().put("lat", it.latitude).put("lon", it.longitude).put("accuracy", it.accuracy.toDouble()).put("t", it.time)) }
+        val newest = fixes.maxByOrNull { it.elapsedRealtimeNanos }
+        fixes.forEach {
+            val f = JSONObject().put("lat", it.latitude).put("lon", it.longitude).put("accuracy", it.accuracy.toDouble()).put("t", it.time)
+            if (it === newest) wifi(ctx, it.elapsedRealtimeNanos).takeIf { w -> w.isNotEmpty() }?.let { w -> f.put("wifi", JSONArray(w)) }
+            q.put(f)
+        }
         val kept = JSONArray().apply { for (i in maxOf(0, q.length() - MAX_QUEUED) until q.length()) put(q.get(i)) }
         p.edit().putString("queue", kept.toString()).commit()
     }
