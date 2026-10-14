@@ -7,6 +7,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
+import android.os.BatteryManager
 import android.util.Base64
 import android.util.AtomicFile
 import androidx.compose.runtime.getValue
@@ -30,8 +31,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 
-/** Text is snapshot state so a streaming token only invalidates its own Text, not the whole list. [t] is when it was sent, epoch ms. */
-class Msg(val user: Boolean, text: String, err: Boolean = false, val images: List<String> = emptyList(), val t: Long = System.currentTimeMillis()) {
+/**
+ * Text is snapshot state so a streaming token only invalidates its own Text, not the whole list. [t] is when it was sent, epoch ms.
+ * [extra] goes to the model after [text] but is never shown in the bubble.
+ */
+class Msg(val user: Boolean, text: String, err: Boolean = false, val images: List<String> = emptyList(), val t: Long = System.currentTimeMillis(), val extra: String = "") {
+    /** What the model sees: the text plus any hidden context. */
+    val sent get() = listOf(text, extra).filter { it.isNotBlank() }.joinToString("\n\n")
     var text by mutableStateOf(text)
     var err by mutableStateOf(err)
 }
@@ -72,7 +78,7 @@ object Store {
         val o = m.getJSONObject(it)
         // "i" was one image path before 1.14, now an array of them
         val i = when (val v = o.opt("i")) { is JSONArray -> List(v.length()) { v.getString(it) }; is String -> listOf(v); else -> emptyList() }
-        Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"), i, o.optLong("t", t))
+        Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"), i, o.optLong("t", t), o.optString("c"))
     }
 
     operator fun get(k: String) = settings[k].orEmpty()
@@ -88,8 +94,16 @@ object Store {
         if (old.isNotBlank() && old != path) scope.launch(io) { File(old).delete() }
     }
 
+    /** The server already stamps each message's time and knows where they are; the app adds what only the phone knows. */
     fun send(text: String, images: List<String> = emptyList()) {
-        msgs += Msg(true, text, images = images)
+        val hours = msgs.lastOrNull()?.let { (System.currentTimeMillis() - it.t) / 3_600_000 } ?: 0L
+        val bm = app.getSystemService(BatteryManager::class.java)
+        val battery = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val extra = listOfNotNull(
+            if (hours >= 48) "${hours / 24} days since the last message" else if (hours >= 1) "${hours}h since the last message" else null,
+            "battery $battery%".takeIf { battery in 0..20 && !bm.isCharging }, // only when it should change the reply
+        )
+        msgs += Msg(true, text, images = images, extra = if (extra.isEmpty()) "" else extra.joinToString(", ", "[", "]"))
         reply()
     }
 
@@ -109,7 +123,7 @@ object Store {
 
     /** The persona and reply rules live on the server; the app only sends the user's own settings. */
     private fun reply() {
-        val history = msgs.filter { !it.err && (it.text.isNotBlank() || it.images.isNotEmpty()) }.map { Turn(it.user, it.text, it.images, it.t) }
+        val history = msgs.filter { !it.err && (it.sent.isNotBlank() || it.images.isNotEmpty()) }.map { Turn(it.user, it.sent, it.images, it.t) }
         val m = Msg(false, "")
         msgs += m
         val system = listOfNotNull(
@@ -134,7 +148,7 @@ object Store {
 
     private fun save() {
         val json = JSONArray().apply {
-            msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err).put("i", JSONArray(it.images)).put("t", it.t)) }
+            msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err).put("i", JSONArray(it.images)).put("t", it.t).put("c", it.extra)) }
         }.toString()
         scope.launch(io) {
             val out = file.startWrite()
