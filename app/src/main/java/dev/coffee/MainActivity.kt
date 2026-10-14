@@ -18,6 +18,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -25,6 +26,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +37,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -63,6 +66,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -76,6 +80,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -88,15 +94,19 @@ import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 // Near-black take on the "Apps in ChatGPT" Figma dark tokens (Foundations / Color).
 private val Bg = Color(0xFF0D0D0D)       // background primary
@@ -106,6 +116,8 @@ private val Muted = Color(0xFFCDCDCD)    // text secondary
 private val Faint = Color(0xFFAFAFAF)    // text tertiary: placeholders, labels, quiet icons
 private val Coral = Color(0xFFCC4A2A)    // brand accent (AA with white), primary button only
 private val Teal = Color(0xFF19B48A)
+private val Mine = Color.White           // the user's bubbles, with Ink text
+private val Ink = Color(0xFF0D0D0D)
 
 private val Body = 16.sp
 private val Small = 14.sp
@@ -201,6 +213,7 @@ private fun ChatScreen(onProfile: () -> Unit) {
     val streaming = Store.job != null
     var input by rememberSaveable { mutableStateOf("") }
     var images by rememberSaveable { mutableStateOf(listOf<String>()) }
+    var reply by rememberSaveable { mutableStateOf("") } // text of the message being replied to
     val scope = rememberCoroutineScope()
     // ponytail: 4 per pick, each ~150 KB on the wire; raise if the backend takes bigger requests
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(4)) { uris ->
@@ -217,9 +230,10 @@ private fun ChatScreen(onProfile: () -> Unit) {
 
     fun send(text: String) {
         if (text.isBlank() && images.isEmpty()) return
-        Store.send(text.trim(), images)
+        Store.send(text.trim(), images, reply)
         input = ""
         images = emptyList()
+        reply = ""
         scope.launch { listState.animateScrollToItem(0) }
     }
 
@@ -260,20 +274,24 @@ private fun ChatScreen(onProfile: () -> Unit) {
                     }
                 }
             } else {
-                Messages(streaming, listState)
+                Messages(streaming, listState) {
+                    reply = it
+                    focus.requestFocus()
+                    keyboard?.show()
+                }
             }
         }
         Composer(
             value = input, onChange = { input = it }, focus = focus, streaming = streaming,
             images = images, onAttach = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-            onRemoveImage = { images -= it },
+            onRemoveImage = { images -= it }, reply = reply, onCancelReply = { reply = "" },
             onSend = { send(input) }, onMic = { listen(false) }, onVoice = { listen(true) },
         )
     }
 }
 
 @Composable
-private fun Messages(streaming: Boolean, listState: LazyListState) {
+private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (String) -> Unit) {
     val msgs = Store.msgs
     LaunchedEffect(msgs.size) { listState.animateScrollToItem(0) }
     // reverseLayout pins the list to the bottom, so streaming text grows upward with no scroll bookkeeping
@@ -282,31 +300,31 @@ private fun Messages(streaming: Boolean, listState: LazyListState) {
             val i = msgs.lastIndex - r
             val m = msgs[i]
             val last = i == msgs.lastIndex
+            val live = streaming && last
+            val swipe = if (live) Modifier else Modifier.swipeToReply { onReply(m.text.ifBlank { "Photo" }) }
             if (m.user) {
-                Column(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(swipe.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (m.images.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()), Arrangement.spacedBy(4.dp)) {
                         val size = if (m.images.size == 1) 180.dp else 120.dp
                         m.images.forEach { Thumb(it, Modifier.size(size).clip(RoundedCornerShape(18.dp))) }
                     }
-                    if (m.text.isNotEmpty()) SelectionContainer {
-                        Text(
-                            m.text, color = Fg, fontSize = Body, lineHeight = 24.sp,
-                            modifier = Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 12.dp, vertical = 8.dp),
-                        )
+                    if (m.text.isNotEmpty() || m.reply.isNotEmpty()) Column(Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(Mine).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        if (m.reply.isNotEmpty()) Quote(m.reply, Ink, Modifier.padding(bottom = 4.dp))
+                        if (m.text.isNotEmpty()) SelectionContainer { Text(m.text, color = Ink, fontSize = Body, lineHeight = 24.sp) }
                     }
                 }
             } else {
                 // Regenerating a check-in would replace it with a reply to an older message
-                Assistant(m, canRedo = last && msgs.getOrNull(i - 1)?.user == true, live = streaming && last)
+                Assistant(m, canRedo = last && msgs.getOrNull(i - 1)?.user == true, live = live, modifier = swipe)
             }
         }
     }
 }
 
 @Composable
-private fun Assistant(m: Msg, canRedo: Boolean, live: Boolean) {
+private fun Assistant(m: Msg, canRedo: Boolean, live: Boolean, modifier: Modifier) {
     val ctx = LocalContext.current
-    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    Column(modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         val bubble = Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 12.dp, vertical = 8.dp)
         if (live && m.text.isEmpty()) {
             // Pulsing "Thinking…" label. Alpha read inside graphicsLayer, so it animates without recomposing.
@@ -328,6 +346,35 @@ private fun Assistant(m: Msg, canRedo: Boolean, live: Boolean) {
     }
 }
 
+/** The message being replied to, cut to two lines. */
+@Composable
+private fun Quote(text: String, color: Color, modifier: Modifier = Modifier) = Text(
+    text, color = color.copy(alpha = .7f), fontSize = Small, lineHeight = 20.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+    modifier = modifier.clip(RoundedCornerShape(10.dp)).background(color.copy(alpha = .1f)).padding(horizontal = 8.dp, vertical = 4.dp),
+)
+
+/** Drag right past 64dp (a tick confirms it) and let go to reply; the bubble springs back either way. */
+@Composable
+private fun Modifier.swipeToReply(onReply: () -> Unit): Modifier {
+    val dx = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    val reply by rememberUpdatedState(onReply)
+    val limit = with(LocalDensity.current) { 64.dp.toPx() }
+    return offset { IntOffset(dx.value.roundToInt(), 0) }.pointerInput(Unit) {
+        fun release() = scope.launch { dx.animateTo(0f) }
+        detectHorizontalDragGestures(
+            onDragEnd = { if (dx.value >= limit) reply(); release() },
+            onDragCancel = { release() },
+        ) { change, amount ->
+            change.consume()
+            val to = (dx.value + amount).coerceIn(0f, limit * 1.25f)
+            if (dx.value < limit && to >= limit) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            scope.launch { dx.snapTo(to) }
+        }
+    }
+}
+
 /** Downsampled off the main thread; images are stored at <=1024px so half size is plenty for thumbnails. */
 @Composable
 private fun Thumb(path: String, modifier: Modifier) {
@@ -341,7 +388,7 @@ private fun Thumb(path: String, modifier: Modifier) {
 @Composable
 private fun Composer(
     value: String, onChange: (String) -> Unit, focus: FocusRequester, streaming: Boolean,
-    images: List<String>, onAttach: () -> Unit, onRemoveImage: (String) -> Unit,
+    images: List<String>, onAttach: () -> Unit, onRemoveImage: (String) -> Unit, reply: String, onCancelReply: () -> Unit,
     onSend: () -> Unit, onMic: () -> Unit, onVoice: () -> Unit,
 ) = Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
     Box(Modifier.size(44.dp).clip(CircleShape).background(Raised).clickable(onClick = onAttach), contentAlignment = Alignment.Center) {
@@ -349,6 +396,10 @@ private fun Composer(
     }
     Spacer(Modifier.width(8.dp))
     Column(Modifier.weight(1f).clip(RoundedCornerShape(22.dp)).background(Raised)) {
+    if (reply.isNotEmpty()) Row(Modifier.padding(start = 8.dp, top = 8.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Quote(reply, Fg, Modifier.weight(1f))
+        IconButton(onCancelReply, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_x), "Cancel reply", tint = Faint, modifier = Modifier.size(16.dp)) }
+    }
     if (images.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 8.dp, top = 8.dp, end = 8.dp), Arrangement.spacedBy(6.dp)) {
         images.forEach { image ->
             Box {
@@ -376,10 +427,11 @@ private fun Composer(
         )
         IconButton(onMic, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_microphone), "Dictate", tint = Faint, modifier = Modifier.size(20.dp)) }
         Spacer(Modifier.width(4.dp))
+        // Send wins over Stop, so a second text can go out while Coffee is still thinking
         val (icon, label, action) = when {
+            value.isNotBlank() || images.isNotEmpty() -> Triple(R.drawable.ph_arrow_up, "Send", onSend)
             streaming -> Triple(R.drawable.ph_stop, "Stop", Store::stop)
-            value.isBlank() && images.isEmpty() -> Triple(R.drawable.ph_waveform, "Voice", onVoice)
-            else -> Triple(R.drawable.ph_arrow_up, "Send", onSend)
+            else -> Triple(R.drawable.ph_waveform, "Voice", onVoice)
         }
         Box(Modifier.size(32.dp).clip(CircleShape).background(Coral).clickable { action() }, contentAlignment = Alignment.Center) {
             Icon(painterResource(icon), label, tint = Color.White, modifier = Modifier.size(18.dp))

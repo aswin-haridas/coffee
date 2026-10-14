@@ -33,11 +33,11 @@ import java.util.UUID
 
 /**
  * Text is snapshot state so a streaming token only invalidates its own Text, not the whole list. [t] is when it was sent, epoch ms.
- * [extra] goes to the model after [text] but is never shown in the bubble.
+ * [extra] goes to the model after [text] but is never shown in the bubble. [reply] is the text of the message swiped to reply to.
  */
-class Msg(val user: Boolean, text: String, err: Boolean = false, val images: List<String> = emptyList(), val t: Long = System.currentTimeMillis(), val extra: String = "") {
-    /** What the model sees: the text plus any hidden context. */
-    val sent get() = listOf(text, extra).filter { it.isNotBlank() }.joinToString("\n\n")
+class Msg(val user: Boolean, text: String, err: Boolean = false, val images: List<String> = emptyList(), val t: Long = System.currentTimeMillis(), val extra: String = "", val reply: String = "") {
+    /** What the model sees: the quoted message, the text, then any hidden context. */
+    val sent get() = listOf(if (reply.isBlank()) "" else "[replying to: \"$reply\"]", text, extra).filter { it.isNotBlank() }.joinToString("\n\n")
     var text by mutableStateOf(text)
     var err by mutableStateOf(err)
 }
@@ -78,7 +78,7 @@ object Store {
         val o = m.getJSONObject(it)
         // "i" was one image path before 1.14, now an array of them
         val i = when (val v = o.opt("i")) { is JSONArray -> List(v.length()) { v.getString(it) }; is String -> listOf(v); else -> emptyList() }
-        Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"), i, o.optLong("t", t), o.optString("c"))
+        Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"), i, o.optLong("t", t), o.optString("c"), o.optString("r"))
     }
 
     operator fun get(k: String) = settings[k].orEmpty()
@@ -95,7 +95,13 @@ object Store {
     }
 
     /** The server already stamps each message's time and knows where they are; the app adds what only the phone knows. */
-    fun send(text: String, images: List<String> = emptyList()) {
+    fun send(text: String, images: List<String> = emptyList(), reply: String = "") {
+        // Double text: drop the reply still being thought up and answer both messages together (the server merges them into one turn)
+        val pending = msgs.lastOrNull()?.takeIf { job != null && !it.user && it.text.isEmpty() }
+        if (pending != null) {
+            job?.cancel()
+            msgs.remove(pending)
+        }
         val hours = msgs.lastOrNull()?.let { (System.currentTimeMillis() - it.t) / 3_600_000 } ?: 0L
         val bm = app.getSystemService(BatteryManager::class.java)
         val battery = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
@@ -103,7 +109,7 @@ object Store {
             if (hours >= 48) "${hours / 24} days since the last message" else if (hours >= 1) "${hours}h since the last message" else null,
             "battery $battery%".takeIf { battery in 0..20 && !bm.isCharging }, // only when it should change the reply
         )
-        msgs += Msg(true, text, images = images, extra = if (extra.isEmpty()) "" else extra.joinToString(", ", "[", "]"))
+        msgs += Msg(true, text, images = images, extra = if (extra.isEmpty()) "" else extra.joinToString(", ", "[", "]"), reply = reply)
         reply()
     }
 
@@ -131,6 +137,7 @@ object Store {
             this["system"].takeIf { it.isNotBlank() }?.let { "Their own instructions for you:\n$it" },
         ).joinToString("\n\n")
         job = scope.launch {
+            val me = coroutineContext[Job]
             try {
                 Backend.stream(system, history).collect { m.text = it }
             } catch (_: CancellationException) {
@@ -139,16 +146,16 @@ object Store {
                 m.text += (if (m.text.isEmpty()) "" else "\n\n") + (e.message ?: "Network error")
                 m.err = true
             } finally {
-                job = null
+                if (job === me) job = null // a double text may have started the next reply already
                 save()
-                if (!m.err && m.text.isNotBlank()) PushService.show(app, m.text) // only if they left the app while it was replying
+                if (!m.err && m.text.isNotBlank() && m in msgs) PushService.show(app, m.text) // only if they left the app while it was replying
             }
         }
     }
 
     private fun save() {
         val json = JSONArray().apply {
-            msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err).put("i", JSONArray(it.images)).put("t", it.t).put("c", it.extra)) }
+            msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err).put("i", JSONArray(it.images)).put("t", it.t).put("c", it.extra).put("r", it.reply)) }
         }.toString()
         scope.launch(io) {
             val out = file.startWrite()
