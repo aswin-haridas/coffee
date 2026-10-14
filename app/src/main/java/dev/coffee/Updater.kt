@@ -1,16 +1,26 @@
 package dev.coffee
 
 import android.app.DownloadManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageInstaller
 import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import org.json.JSONObject
 import java.net.URL
+import kotlin.concurrent.thread
 
-// Self-update from GitHub releases: the latest release's .apk asset is downloaded and handed to the system installer.
+// Self-update from GitHub releases: the latest release's .apk asset is downloaded and installed through a
+// PackageInstaller session. Once Coffee is its own installer of record (after the first update this way), Android 12+
+// installs updates without asking; otherwise the system shows its confirm screen.
 object Updater {
     class Release(val version: String, val apk: String)
 
@@ -42,11 +52,44 @@ object Updater {
                 if (i.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) != id) return
                 app.unregisterReceiver(this)
                 val uri = dm.getUriForDownloadedFile(id) ?: return
-                app.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, APK)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                thread {
+                    runCatching { commit(app, uri) }.onFailure { toast(app, "Update failed: ${it.message}") }
+                    dm.remove(id)
+                }
             }
         }, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_EXPORTED)
     }
 
+    private fun commit(app: Context, uri: Uri) {
+        val installer = app.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+        if (Build.VERSION.SDK_INT >= 31) params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+        installer.openSession(installer.createSession(params)).use { s ->
+            app.contentResolver.openInputStream(uri)!!.use { input -> s.openWrite("coffee.apk", 0, -1).use { input.copyTo(it); s.fsync(it) } }
+            ContextCompat.registerReceiver(app, status, IntentFilter(STATUS), ContextCompat.RECEIVER_NOT_EXPORTED)
+            // Mutable so the installer can fill in the result extras.
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+            s.commit(PendingIntent.getBroadcast(app, 0, Intent(STATUS).setPackage(app.packageName), flags).intentSender)
+        }
+    }
+
+    private val status = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            when (i.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
+                // Not yet the installer of record, or Android 11 and older: the system asks once.
+                PackageInstaller.STATUS_PENDING_USER_ACTION ->
+                    IntentCompat.getParcelableExtra(i, Intent.EXTRA_INTENT, Intent::class.java)?.let { c.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                PackageInstaller.STATUS_SUCCESS -> c.applicationContext.unregisterReceiver(this)
+                else -> {
+                    c.applicationContext.unregisterReceiver(this)
+                    toast(c, "Update failed: ${i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)}")
+                }
+            }
+        }
+    }
+
+    private fun toast(c: Context, msg: String) = Handler(Looper.getMainLooper()).post { Toast.makeText(c, msg, Toast.LENGTH_LONG).show() }
+
+    private const val STATUS = "dev.coffee.INSTALL_STATUS"
     private const val APK = "application/vnd.android.package-archive"
 }
