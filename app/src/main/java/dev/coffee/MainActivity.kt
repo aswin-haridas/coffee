@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -97,9 +98,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
-// Dark tokens from the official "Apps in ChatGPT" Figma (Foundations / Color).
-private val Bg = Color(0xFF212121)       // background primary
-private val Raised = Color(0xFF303030)   // background secondary: bubbles, composer, cards
+// Near-black take on the "Apps in ChatGPT" Figma dark tokens (Foundations / Color).
+private val Bg = Color(0xFF0D0D0D)       // background primary
+private val Raised = Color(0xFF212121)   // background secondary: bubbles, composer, cards
 private val Fg = Color(0xFFFFFFFF)       // text primary
 private val Muted = Color(0xFFCDCDCD)    // text secondary
 private val Faint = Color(0xFFAFAFAF)    // text tertiary: placeholders, labels, quiet icons
@@ -199,12 +200,14 @@ private fun ChatScreen(onProfile: () -> Unit) {
     val ctx = LocalContext.current
     val streaming = Store.job != null
     var input by rememberSaveable { mutableStateOf("") }
-    var image by rememberSaveable { mutableStateOf<String?>(null) }
+    var images by rememberSaveable { mutableStateOf(listOf<String>()) }
     val scope = rememberCoroutineScope()
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) scope.launch {
-            image = withContext(Dispatchers.IO) { Store.saveImage(ctx, uri) }
-            if (image == null) Toast.makeText(ctx, "Couldn't read that image", Toast.LENGTH_SHORT).show()
+    // ponytail: 4 per pick, each ~150 KB on the wire; raise if the backend takes bigger requests
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(4)) { uris ->
+        if (uris.isNotEmpty()) scope.launch {
+            val saved = withContext(Dispatchers.IO) { uris.map { Store.saveImage(ctx, it) } }
+            images += saved.filterNotNull()
+            if (null in saved) Toast.makeText(ctx, "Couldn't read some images", Toast.LENGTH_SHORT).show()
         }
     }
     var autoSend by remember { mutableStateOf(false) }
@@ -213,10 +216,10 @@ private fun ChatScreen(onProfile: () -> Unit) {
     val listState = remember { LazyListState() }
 
     fun send(text: String) {
-        if (text.isBlank() && image == null) return
-        Store.send(text.trim(), image)
+        if (text.isBlank() && images.isEmpty()) return
+        Store.send(text.trim(), images)
         input = ""
-        image = null
+        images = emptyList()
         scope.launch { listState.animateScrollToItem(0) }
     }
 
@@ -262,8 +265,8 @@ private fun ChatScreen(onProfile: () -> Unit) {
         }
         Composer(
             value = input, onChange = { input = it }, focus = focus, streaming = streaming,
-            image = image, onAttach = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-            onRemoveImage = { image = null },
+            images = images, onAttach = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            onRemoveImage = { images -= it },
             onSend = { send(input) }, onMic = { listen(false) }, onVoice = { listen(true) },
         )
     }
@@ -281,7 +284,10 @@ private fun Messages(streaming: Boolean, listState: LazyListState) {
             val last = i == msgs.lastIndex
             if (m.user) {
                 Column(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    m.image?.let { Thumb(it, Modifier.size(180.dp).clip(RoundedCornerShape(18.dp))) }
+                    if (m.images.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()), Arrangement.spacedBy(4.dp)) {
+                        val size = if (m.images.size == 1) 180.dp else 120.dp
+                        m.images.forEach { Thumb(it, Modifier.size(size).clip(RoundedCornerShape(18.dp))) }
+                    }
                     if (m.text.isNotEmpty()) SelectionContainer {
                         Text(
                             m.text, color = Fg, fontSize = Body, lineHeight = 24.sp,
@@ -301,12 +307,13 @@ private fun Messages(streaming: Boolean, listState: LazyListState) {
 private fun Assistant(m: Msg, canRedo: Boolean, live: Boolean) {
     val ctx = LocalContext.current
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        val bubble = Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 12.dp, vertical = 8.dp)
         if (live && m.text.isEmpty()) {
             // Pulsing "Thinking…" label. Alpha read inside graphicsLayer, so it animates without recomposing.
             val pulse = rememberInfiniteTransition(label = "loading").animateFloat(.4f, 1f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "p")
-            Text("Thinking…", color = Faint, fontSize = Body, lineHeight = 24.sp, modifier = Modifier.graphicsLayer { alpha = pulse.value })
+            Text("Thinking…", color = Faint, fontSize = Body, lineHeight = 24.sp, modifier = bubble.graphicsLayer { alpha = pulse.value })
         } else {
-            SelectionContainer { Text(m.text, color = if (m.err) Color(0xFFFF8A80) else Fg, fontSize = Body, lineHeight = 24.sp) }
+            SelectionContainer { Text(m.text, color = if (m.err) Color(0xFFFF8A80) else Fg, fontSize = Body, lineHeight = 24.sp, modifier = bubble) }
         }
         if (!live) {
             Row {
@@ -334,7 +341,7 @@ private fun Thumb(path: String, modifier: Modifier) {
 @Composable
 private fun Composer(
     value: String, onChange: (String) -> Unit, focus: FocusRequester, streaming: Boolean,
-    image: String?, onAttach: () -> Unit, onRemoveImage: () -> Unit,
+    images: List<String>, onAttach: () -> Unit, onRemoveImage: (String) -> Unit,
     onSend: () -> Unit, onMic: () -> Unit, onVoice: () -> Unit,
 ) = Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
     Box(Modifier.size(44.dp).clip(CircleShape).background(Raised).clickable(onClick = onAttach), contentAlignment = Alignment.Center) {
@@ -342,12 +349,16 @@ private fun Composer(
     }
     Spacer(Modifier.width(8.dp))
     Column(Modifier.weight(1f).clip(RoundedCornerShape(22.dp)).background(Raised)) {
-    if (image != null) Box(Modifier.padding(start = 8.dp, top = 8.dp)) {
-        Thumb(image, Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)))
-        Box(
-            Modifier.align(Alignment.TopEnd).padding(2.dp).size(20.dp).clip(CircleShape).background(Bg).border(1.dp, Raised, CircleShape).clickable(onClick = onRemoveImage),
-            contentAlignment = Alignment.Center,
-        ) { Icon(painterResource(R.drawable.ph_x), "Remove image", tint = Fg, modifier = Modifier.size(12.dp)) }
+    if (images.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 8.dp, top = 8.dp, end = 8.dp), Arrangement.spacedBy(6.dp)) {
+        images.forEach { image ->
+            Box {
+                Thumb(image, Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)))
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(2.dp).size(20.dp).clip(CircleShape).background(Bg).border(1.dp, Raised, CircleShape).clickable { onRemoveImage(image) },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(painterResource(R.drawable.ph_x), "Remove image", tint = Fg, modifier = Modifier.size(12.dp)) }
+            }
+        }
     }
     Row(
         Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
@@ -367,7 +378,7 @@ private fun Composer(
         Spacer(Modifier.width(4.dp))
         val (icon, label, action) = when {
             streaming -> Triple(R.drawable.ph_stop, "Stop", Store::stop)
-            value.isBlank() && image == null -> Triple(R.drawable.ph_waveform, "Voice", onVoice)
+            value.isBlank() && images.isEmpty() -> Triple(R.drawable.ph_waveform, "Voice", onVoice)
             else -> Triple(R.drawable.ph_arrow_up, "Send", onSend)
         }
         Box(Modifier.size(32.dp).clip(CircleShape).background(Coral).clickable { action() }, contentAlignment = Alignment.Center) {

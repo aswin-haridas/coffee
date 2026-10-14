@@ -1,8 +1,8 @@
 <resources>
     <style name="Theme.Coffee" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#212121</item>
-        <item name="android:colorBackground">#212121</item>
-        <item name="android:statusBarColor">#212121</item>
-        <item name="android:navigationBarColor">#212121</item>
+        <item name="android:windowBackground">#0D0D0D</item>
+        <item name="android:colorBackground">#0D0D0D</item>
+        <item name="android:statusBarColor">#0D0D0D</item>
+        <item name="android:navigationBarColor">#0D0D0D</item>
     </style>
 </resources>

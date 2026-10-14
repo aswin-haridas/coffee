@@ -15,8 +15,8 @@ android {
         applicationId = "dev.coffee"
         minSdk = 26
         targetSdk = 36
-        versionCode = 18
-        versionName = "1.13.0"
+        versionCode = 19
+        versionName = "1.14.0"
         // Key lives in gitignored secrets.properties so it never lands in the public repo.
         val secrets = rootProject.file("secrets.properties").takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
         buildConfigField("String", "CHAT_KEY", "\"${secrets?.getProperty("CHAT_KEY").orEmpty()}\"")

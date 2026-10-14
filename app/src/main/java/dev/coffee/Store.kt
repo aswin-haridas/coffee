@@ -31,7 +31,7 @@ import java.net.URL
 import java.util.UUID
 
 /** Text is snapshot state so a streaming token only invalidates its own Text, not the whole list. [t] is when it was sent, epoch ms. */
-class Msg(val user: Boolean, text: String, err: Boolean = false, val image: String? = null, val t: Long = System.currentTimeMillis()) {
+class Msg(val user: Boolean, text: String, err: Boolean = false, val images: List<String> = emptyList(), val t: Long = System.currentTimeMillis()) {
     var text by mutableStateOf(text)
     var err by mutableStateOf(err)
 }
@@ -70,7 +70,9 @@ object Store {
 
     private fun parse(m: JSONArray, t: Long = 0) = List(m.length()) {
         val o = m.getJSONObject(it)
-        Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"), o.optString("i").ifEmpty { null }, o.optLong("t", t))
+        // "i" was one image path before 1.14, now an array of them
+        val i = when (val v = o.opt("i")) { is JSONArray -> List(v.length()) { v.getString(it) }; is String -> listOf(v); else -> emptyList() }
+        Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"), i, o.optLong("t", t))
     }
 
     operator fun get(k: String) = settings[k].orEmpty()
@@ -86,8 +88,8 @@ object Store {
         if (old.isNotBlank() && old != path) scope.launch(io) { File(old).delete() }
     }
 
-    fun send(text: String, image: String? = null) {
-        msgs += Msg(true, text, image = image)
+    fun send(text: String, images: List<String> = emptyList()) {
+        msgs += Msg(true, text, images = images)
         reply()
     }
 
@@ -107,7 +109,7 @@ object Store {
 
     /** The persona and reply rules live on the server; the app only sends the user's own settings. */
     private fun reply() {
-        val history = msgs.filter { !it.err && (it.text.isNotBlank() || it.image != null) }.map { Turn(it.user, it.text, it.image, it.t) }
+        val history = msgs.filter { !it.err && (it.text.isNotBlank() || it.images.isNotEmpty()) }.map { Turn(it.user, it.text, it.images, it.t) }
         val m = Msg(false, "")
         msgs += m
         val system = listOfNotNull(
@@ -132,7 +134,7 @@ object Store {
 
     private fun save() {
         val json = JSONArray().apply {
-            msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err).put("i", it.image).put("t", it.t)) }
+            msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err).put("i", JSONArray(it.images)).put("t", it.t)) }
         }.toString()
         scope.launch(io) {
             val out = file.startWrite()
@@ -175,7 +177,7 @@ object Store {
     }.getOrNull()
 }
 
-class Turn(val user: Boolean, val text: String, val image: String?, val t: Long)
+class Turn(val user: Boolean, val text: String, val images: List<String>, val t: Long)
 
 /** coffee-backend /v1/chat: holds the model keys, the prompt and the notes; shows the model the newest part of the chat. */
 object Backend {
@@ -260,10 +262,12 @@ object Backend {
                 val messages = JSONArray()
                 history.forEachIndexed { i, t ->
                     // Photos ride along only on the newest messages: older ones were already talked about, and each is ~150 KB.
-                    val content: Any = if (t.image == null || i < history.size - 10) (if (t.image != null) "[photo] " else "") + t.text else JSONArray().apply {
+                    val content: Any = if (t.images.isEmpty() || i < history.size - 10) "[photo] ".repeat(t.images.size) + t.text else JSONArray().apply {
                         if (t.text.isNotBlank()) put(JSONObject().put("type", "text").put("text", t.text))
-                        val b64 = Base64.encodeToString(File(t.image).readBytes(), Base64.NO_WRAP)
-                        put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$b64")))
+                        t.images.forEach {
+                            val b64 = Base64.encodeToString(File(it).readBytes(), Base64.NO_WRAP)
+                            put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$b64")))
+                        }
                     }
                     messages.put(JSONObject().put("role", if (t.user) "user" else "assistant").put("content", content).put("t", t.t))
                 }
