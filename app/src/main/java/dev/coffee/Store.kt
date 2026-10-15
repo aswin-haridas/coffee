@@ -33,13 +33,15 @@ import java.util.UUID
 
 /**
  * Text is snapshot state so a streaming token only invalidates its own Text, not the whole list. [t] is when it was sent, epoch ms.
- * [extra] goes to the model after [text] but is never shown in the bubble. [reply] is the text of the message swiped to reply to.
+ * [extra] goes to the model after [text] but is never shown in the bubble. [reply] is the text of the message swiped to reply to,
+ * or on Coffee's messages the one of the user's it answers.
  */
-class Msg(val user: Boolean, text: String, err: Boolean = false, val images: List<String> = emptyList(), val t: Long = System.currentTimeMillis(), val extra: String = "", val reply: String = "") {
-    /** What the model sees: the quoted message, the text, then any hidden context. */
-    val sent get() = listOf(if (reply.isBlank()) "" else "[replying to: \"$reply\"]", text, extra).filter { it.isNotBlank() }.joinToString("\n\n")
+class Msg(val user: Boolean, text: String, err: Boolean = false, val images: List<String> = emptyList(), val t: Long = System.currentTimeMillis(), val extra: String = "", reply: String = "") {
+    /** What the model sees: the quoted message, the text, then any hidden context. Coffee's own quotes stay out. */
+    val sent get() = listOf(if (reply.isBlank() || !user) "" else "[replying to: \"$reply\"]", text, extra).filter { it.isNotBlank() }.joinToString("\n\n")
     var text by mutableStateOf(text)
     var err by mutableStateOf(err)
+    var reply by mutableStateOf(reply)
 }
 
 object Store {
@@ -139,7 +141,10 @@ object Store {
         job = scope.launch {
             val me = coroutineContext[Job]
             try {
-                Backend.stream(system, history).collect { m.text = it }
+                Backend.stream(system, history).collect { (text, to) ->
+                    m.text = text
+                    if (to > 0) msgs.find { it.user && it.t == to }?.let { m.reply = it.text.ifBlank { "Photo" } }
+                }
             } catch (_: CancellationException) {
                 // stopped by user; keep the partial text
             } catch (e: Exception) {
@@ -273,7 +278,8 @@ object Backend {
     }
 
     /**
-     * Streams an OpenAI-style chat completion and emits the full accumulated reply.
+     * Streams an OpenAI-style chat completion and emits the full accumulated reply, with the send time of the
+     * user message it answers when the server picked one (else 0).
      * Conflated so the UI renders at most one update per frame; cancelling disconnects the socket immediately.
      */
     fun stream(system: String, history: List<Turn>) = callbackFlow {
@@ -299,6 +305,7 @@ object Backend {
                 conn.outputStream.use { it.write(JSONObject().put("system", system).put("messages", messages).toString().toByteArray()) }
                 if (conn.responseCode !in 200..299) throw IOException(errorOf(conn.errorStream?.bufferedReader()?.readText(), conn.responseCode))
                 val sb = StringBuilder()
+                var to = 0L
                 conn.inputStream.bufferedReader().useLines { lines ->
                     for (line in lines) {
                         if (!line.startsWith("data: ")) continue // blank separators
@@ -306,11 +313,12 @@ object Backend {
                         if (data == "[DONE]") break
                         val o = JSONObject(data)
                         if (o.has("error")) throw IOException(errorOf(data, 0))
+                        if (o.has("reply_to")) to = o.optLong("reply_to")
                         val text = o.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta")?.optString("content").orEmpty()
-                        if (text.isNotEmpty()) trySend(sb.append(text).toString())
+                        if (text.isNotEmpty()) trySend(sb.append(text).toString() to to)
                     }
                 }
-                if (sb.isEmpty()) trySend("No response.")
+                if (sb.isEmpty()) trySend("No response." to 0L)
                 close()
             } catch (e: Exception) {
                 close(e)

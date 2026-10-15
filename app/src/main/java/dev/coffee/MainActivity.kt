@@ -114,10 +114,9 @@ private val Raised = Color(0xFF212121)   // background secondary: bubbles, compo
 private val Fg = Color(0xFFFFFFFF)       // text primary
 private val Muted = Color(0xFFCDCDCD)    // text secondary
 private val Faint = Color(0xFFAFAFAF)    // text tertiary: placeholders, labels, quiet icons
-private val Coral = Color(0xFFCC4A2A)    // brand accent (AA with white), primary button only
+private val Coral = Color(0xFFCC4A2A)    // brand accent (AA with white): primary button, the user's bubbles
 private val Teal = Color(0xFF19B48A)
-private val Mine = Color.White           // the user's bubbles, with Ink text
-private val Ink = Color(0xFF0D0D0D)
+private val Mine = Coral                 // the user's bubbles, with Fg text
 
 private val Body = 16.sp
 private val Small = 14.sp
@@ -309,8 +308,8 @@ private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (Str
                         m.images.forEach { Thumb(it, Modifier.size(size).clip(RoundedCornerShape(18.dp))) }
                     }
                     if (m.text.isNotEmpty() || m.reply.isNotEmpty()) Column(Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(Mine).padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        if (m.reply.isNotEmpty()) Quote(m.reply, Ink, Modifier.padding(bottom = 4.dp))
-                        if (m.text.isNotEmpty()) SelectionContainer { Text(m.text, color = Ink, fontSize = Body, lineHeight = 24.sp) }
+                        if (m.reply.isNotEmpty()) Quote(m.reply, Fg, Modifier.padding(bottom = 4.dp))
+                        if (m.text.isNotEmpty()) SelectionContainer { Text(m.text, color = Fg, fontSize = Body, lineHeight = 24.sp) }
                     }
                 }
             } else {
@@ -331,7 +330,10 @@ private fun Assistant(m: Msg, canRedo: Boolean, live: Boolean, modifier: Modifie
             val pulse = rememberInfiniteTransition(label = "loading").animateFloat(.4f, 1f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "p")
             Text("Thinking…", color = Faint, fontSize = Body, lineHeight = 24.sp, modifier = bubble.graphicsLayer { alpha = pulse.value })
         } else {
-            SelectionContainer { Text(m.text, color = if (m.err) Color(0xFFFF8A80) else Fg, fontSize = Body, lineHeight = 24.sp, modifier = bubble) }
+            Column(bubble) {
+                if (m.reply.isNotEmpty()) Quote(m.reply, Fg, Modifier.padding(bottom = 4.dp))
+                SelectionContainer { Text(m.text, color = if (m.err) Color(0xFFFF8A80) else Fg, fontSize = Body, lineHeight = 24.sp) }
+            }
         }
         if (!live) {
             Row {
