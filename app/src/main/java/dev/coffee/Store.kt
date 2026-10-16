@@ -34,9 +34,10 @@ import java.util.UUID
 /**
  * Text is snapshot state so a streaming token only invalidates its own Text, not the whole list. [t] is when it was sent, epoch ms.
  * [extra] goes to the model after [text] but is never shown in the bubble. [reply] is the text of the message swiped to reply to,
- * or on Coffee's messages the one of the user's it answers.
+ * or on Coffee's messages the one of the user's it answers. [typed] is what the user actually typed, kept once the server
+ * has rephrased [text] into clean language for the history.
  */
-class Msg(val user: Boolean, text: String, err: Boolean = false, val images: List<String> = emptyList(), val t: Long = System.currentTimeMillis(), val extra: String = "", reply: String = "") {
+class Msg(val user: Boolean, text: String, err: Boolean = false, val images: List<String> = emptyList(), val t: Long = System.currentTimeMillis(), val extra: String = "", reply: String = "", var typed: String = "") {
     /** What the model sees: the quoted message, the text, then any hidden context. Coffee's own quotes stay out. */
     val sent get() = listOf(if (reply.isBlank() || !user) "" else "[replying to: \"$reply\"]", text, extra).filter { it.isNotBlank() }.joinToString("\n\n")
     var text by mutableStateOf(text)
@@ -80,7 +81,7 @@ object Store {
         val o = m.getJSONObject(it)
         // "i" was one image path before 1.14, now an array of them
         val i = when (val v = o.opt("i")) { is JSONArray -> List(v.length()) { v.getString(it) }; is String -> listOf(v); else -> emptyList() }
-        Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"), i, o.optLong("t", t), o.optString("c"), o.optString("r"))
+        Msg(o.getBoolean("u"), o.getString("x"), o.optBoolean("e"), i, o.optLong("t", t), o.optString("c"), o.optString("r"), o.optString("o"))
     }
 
     operator fun get(k: String) = settings[k].orEmpty()
@@ -131,7 +132,7 @@ object Store {
 
     /** The persona and reply rules live on the server; the app only sends the user's own settings. */
     private fun reply() {
-        val history = msgs.filter { !it.err && (it.sent.isNotBlank() || it.images.isNotEmpty()) }.map { Turn(it.user, it.sent, it.images, it.t) }
+        val history = msgs.filter { !it.err && (it.sent.isNotBlank() || it.images.isNotEmpty()) }.map { Turn(it.user, it.sent, it.images, it.t, if (it.user) it.text else "") }
         val m = Msg(false, "")
         msgs += m
         val system = listOfNotNull(
@@ -141,8 +142,11 @@ object Store {
         job = scope.launch {
             val me = coroutineContext[Job]
             try {
-                Backend.stream(system, history).collect { (text, to) ->
+                Backend.stream(system, history).collect { (text, to, rephrased) ->
                     m.text = text
+                    rephrased.forEach { (t, clean) ->
+                        msgs.find { it.user && it.t == t }?.let { if (it.typed.isEmpty()) it.typed = it.text; it.text = clean }
+                    }
                     if (to > 0) msgs.find { it.user && it.t == to }?.let { m.reply = it.text.ifBlank { "Photo" } }
                 }
             } catch (_: CancellationException) {
@@ -160,7 +164,7 @@ object Store {
 
     private fun save() {
         val json = JSONArray().apply {
-            msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err).put("i", JSONArray(it.images)).put("t", it.t).put("c", it.extra).put("r", it.reply)) }
+            msgs.forEach { put(JSONObject().put("u", it.user).put("x", it.text).put("e", it.err).put("i", JSONArray(it.images)).put("t", it.t).put("c", it.extra).put("r", it.reply).put("o", it.typed)) }
         }.toString()
         scope.launch(io) {
             val out = file.startWrite()
@@ -203,7 +207,8 @@ object Store {
     }.getOrNull()
 }
 
-class Turn(val user: Boolean, val text: String, val images: List<String>, val t: Long)
+/** [typed] is the user's own words without the reply quote or hidden context, for the server to rephrase. */
+class Turn(val user: Boolean, val text: String, val images: List<String>, val t: Long, val typed: String = "")
 
 /** coffee-backend /v1/chat: holds the model keys, the prompt and the notes; shows the model the newest part of the chat. */
 object Backend {
@@ -263,6 +268,29 @@ object Backend {
         }
     }
 
+    /** Blocking; call off the main thread. The visits and path of [date] (YYYY-MM-DD); throws on failure. */
+    fun timeline(date: String): Day {
+        val conn = URL("https://coffee.aswinharidas.uk/v1/timeline?date=$date").openConnection() as HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 15_000
+        conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+        try {
+            val o = JSONObject(conn.inputStream.bufferedReader().readText())
+            val v = o.getJSONArray("visits")
+            val p = o.getJSONArray("path")
+            return Day(
+                List(v.length()) {
+                    val x = v.getJSONObject(it)
+                    Visit(x.getString("name"), x.getString("kind"), x.optString("near"), x.getLong("arrived"), x.getLong("left"),
+                        x.optDouble("lat").takeIf { !it.isNaN() }, x.optDouble("lon").takeIf { !it.isNaN() })
+                },
+                List(p.length()) { p.getJSONArray(it).let { a -> doubleArrayOf(a.getDouble(0), a.getDouble(1), a.getDouble(2)) } },
+            )
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     /** Blocking; call off the main thread. Check-ins the server couldn't push, cleared there once fetched. */
     fun nudges(): List<String> {
         val conn = URL("https://coffee.aswinharidas.uk/v1/nudges").openConnection() as HttpURLConnection
@@ -279,7 +307,8 @@ object Backend {
 
     /**
      * Streams an OpenAI-style chat completion and emits the full accumulated reply, with the send time of the
-     * user message it answers when the server picked one (else 0).
+     * user message it answers when the server picked one (else 0), and the server's rephrasings of the user's newest
+     * messages, by send time.
      * Conflated so the UI renders at most one update per frame; cancelling disconnects the socket immediately.
      */
     fun stream(system: String, history: List<Turn>) = callbackFlow {
@@ -296,7 +325,7 @@ object Backend {
                             put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$b64")))
                         }
                     }
-                    messages.put(JSONObject().put("role", if (t.user) "user" else "assistant").put("content", content).put("t", t.t))
+                    messages.put(JSONObject().put("role", if (t.user) "user" else "assistant").put("content", content).put("t", t.t).apply { if (t.typed.isNotBlank()) put("x", t.typed) })
                 }
                 conn.requestMethod = "POST"
                 conn.doOutput = true
@@ -306,6 +335,7 @@ object Backend {
                 if (conn.responseCode !in 200..299) throw IOException(errorOf(conn.errorStream?.bufferedReader()?.readText(), conn.responseCode))
                 val sb = StringBuilder()
                 var to = 0L
+                val rephrased = mutableMapOf<Long, String>()
                 conn.inputStream.bufferedReader().useLines { lines ->
                     for (line in lines) {
                         if (!line.startsWith("data: ")) continue // blank separators
@@ -314,11 +344,12 @@ object Backend {
                         val o = JSONObject(data)
                         if (o.has("error")) throw IOException(errorOf(data, 0))
                         if (o.has("reply_to")) to = o.optLong("reply_to")
+                        o.optJSONObject("rephrased")?.let { r -> r.keys().forEach { k -> k.toLongOrNull()?.let { rephrased[it] = r.getString(k) } } }
                         val text = o.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta")?.optString("content").orEmpty()
-                        if (text.isNotEmpty()) trySend(sb.append(text).toString() to to)
+                        if (text.isNotEmpty()) trySend(Triple(sb.append(text).toString(), to, rephrased.toMap()))
                     }
                 }
-                if (sb.isEmpty()) trySend("No response." to 0L)
+                if (sb.isEmpty()) trySend(Triple("No response.", 0L, emptyMap()))
                 close()
             } catch (e: Exception) {
                 close(e)

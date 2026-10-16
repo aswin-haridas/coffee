@@ -3,6 +3,11 @@ package dev.coffee
 import android.Manifest
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
+import android.net.Uri
+import androidx.core.content.FileProvider
+import java.io.File
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -19,11 +24,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -77,7 +77,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -106,21 +105,22 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 // Near-black take on the "Apps in ChatGPT" Figma dark tokens (Foundations / Color).
-private val Bg = Color(0xFF0D0D0D)       // background primary
-private val Raised = Color(0xFF212121)   // background secondary: bubbles, composer, cards
-private val Fg = Color(0xFFFFFFFF)       // text primary
-private val Muted = Color(0xFFCDCDCD)    // text secondary
-private val Faint = Color(0xFFAFAFAF)    // text tertiary: placeholders, labels, quiet icons
-private val Coral = Color(0xFFCC4A2A)    // brand accent (AA with white): primary button, the user's bubbles
+internal val Bg = Color(0xFF0D0D0D)       // background primary
+internal val Raised = Color(0xFF212121)   // background secondary: bubbles, composer, cards
+internal val Fg = Color(0xFFFFFFFF)       // text primary
+internal val Muted = Color(0xFFCDCDCD)    // text secondary
+internal val Faint = Color(0xFFAFAFAF)    // text tertiary: placeholders, labels, quiet icons
+internal val Coral = Color(0xFFCC4A2A)    // brand accent (AA with white): primary button, the user's bubbles
 private val Teal = Color(0xFF19B48A)
 private val Mine = Coral                 // the user's bubbles, with Fg text
 
-private val Body = 16.sp
-private val Small = 14.sp
-private val Title = 18.sp
+internal val Body = 16.sp
+internal val Small = 14.sp
+internal val Title = 18.sp
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -157,9 +157,13 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun App() {
-    var profile by rememberSaveable { mutableStateOf(false) }
-    BackHandler(profile) { profile = false }
-    if (profile) Profile { profile = false } else ChatScreen(onProfile = { profile = true })
+    var screen by rememberSaveable { mutableStateOf("chat") }
+    BackHandler(screen != "chat") { screen = "chat" }
+    when (screen) {
+        "profile" -> Profile { screen = "chat" }
+        "timeline" -> TimelineScreen { screen = "chat" }
+        else -> ChatScreen(onProfile = { screen = "profile" }, onTimeline = { screen = "timeline" })
+    }
     UpdatePrompt()
 }
 
@@ -199,7 +203,7 @@ private fun Avatar(size: Dp, font: TextUnit, modifier: Modifier = Modifier) =
 
 /** Flat 56dp app bar: nav icon, title, trailing actions. */
 @Composable
-private fun TopBar(nav: @Composable () -> Unit, title: String, actions: @Composable () -> Unit = {}) =
+internal fun TopBar(nav: @Composable () -> Unit, title: String, actions: @Composable () -> Unit = {}) =
     Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         nav()
         Text(title, color = Fg, fontSize = Title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).padding(start = 4.dp))
@@ -207,7 +211,7 @@ private fun TopBar(nav: @Composable () -> Unit, title: String, actions: @Composa
     }
 
 @Composable
-private fun ChatScreen(onProfile: () -> Unit) {
+private fun ChatScreen(onProfile: () -> Unit, onTimeline: () -> Unit) {
     val ctx = LocalContext.current
     val streaming = Store.job != null
     var input by rememberSaveable { mutableStateOf("") }
@@ -221,6 +225,19 @@ private fun ChatScreen(onProfile: () -> Unit) {
             images += saved.filterNotNull()
             if (null in saved) Toast.makeText(ctx, "Couldn't read some images", Toast.LENGTH_SHORT).show()
         }
+    }
+    // System camera app writes into a cache file we share via FileProvider; no CAMERA permission needed.
+    val shot = remember { File(ctx.cacheDir, "camera/shot.jpg").apply { parentFile!!.mkdirs() } }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        if (ok) scope.launch {
+            val saved = withContext(Dispatchers.IO) { Store.saveImage(ctx, Uri.fromFile(shot)).also { shot.delete() } }
+            if (saved == null) Toast.makeText(ctx, "Couldn't read that photo", Toast.LENGTH_SHORT).show() else images += saved
+        }
+    }
+    fun takePhoto() = try {
+        camera.launch(FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", shot))
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(ctx, "No camera app on this device", Toast.LENGTH_SHORT).show()
     }
     var autoSend by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
@@ -250,7 +267,9 @@ private fun ChatScreen(onProfile: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
-        TopBar(nav = { IconButton(onProfile, Modifier.semantics { contentDescription = "Settings" }) { Avatar(30.dp, 12.sp) } }, title = "Coffee")
+        TopBar(nav = { IconButton(onProfile, Modifier.semantics { contentDescription = "Settings" }) { Avatar(30.dp, 12.sp) } }, title = "Coffee") {
+            if (Store[Places.KEY] == "on") IconButton(onTimeline) { Icon(painterResource(R.drawable.ph_map_pin), "Timeline", tint = Muted) }
+        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (Store.msgs.isEmpty()) {
                 Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 8.dp, vertical = 4.dp)) {
@@ -282,7 +301,7 @@ private fun ChatScreen(onProfile: () -> Unit) {
         }
         Composer(
             value = input, onChange = { input = it }, focus = focus, streaming = streaming,
-            images = images, onAttach = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            images = images, onAttach = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, onCamera = { takePhoto() },
             onRemoveImage = { images -= it }, reply = reply, onCancelReply = { reply = "" },
             onSend = { send(input) }, onMic = { listen(false) }, onVoice = { listen(true) },
         )
@@ -320,15 +339,20 @@ private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (Str
     }
 }
 
+/** Braille-dot spinner, the terminal kind, in place of "Loading…" text. */
+@Composable
+fun Spinner(modifier: Modifier = Modifier) {
+    val frame by produceState(0) { while (true) { delay(80); value++ } }
+    Text("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[frame % 10].toString(), color = Faint, fontSize = Body, lineHeight = 24.sp, modifier = modifier.semantics { contentDescription = "Loading" })
+}
+
 @Composable
 private fun Assistant(m: Msg, canRedo: Boolean, live: Boolean, modifier: Modifier) {
     val ctx = LocalContext.current
     Column(modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         val bubble = Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 12.dp, vertical = 8.dp)
         if (live && m.text.isEmpty()) {
-            // Pulsing "Thinking…" label. Alpha read inside graphicsLayer, so it animates without recomposing.
-            val pulse = rememberInfiniteTransition(label = "loading").animateFloat(.4f, 1f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "p")
-            Text("Thinking…", color = Faint, fontSize = Body, lineHeight = 24.sp, modifier = bubble.graphicsLayer { alpha = pulse.value })
+            Spinner(bubble)
         } else {
             Column(bubble) {
                 if (m.reply.isNotEmpty()) Quote(m.reply, Fg, Modifier.padding(bottom = 4.dp))
@@ -390,11 +414,16 @@ private fun Thumb(path: String, modifier: Modifier) {
 @Composable
 private fun Composer(
     value: String, onChange: (String) -> Unit, focus: FocusRequester, streaming: Boolean,
-    images: List<String>, onAttach: () -> Unit, onRemoveImage: (String) -> Unit, reply: String, onCancelReply: () -> Unit,
+    images: List<String>, onAttach: () -> Unit, onCamera: () -> Unit, onRemoveImage: (String) -> Unit, reply: String, onCancelReply: () -> Unit,
     onSend: () -> Unit, onMic: () -> Unit, onVoice: () -> Unit,
 ) = Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-    Box(Modifier.size(44.dp).clip(CircleShape).background(Raised).clickable(onClick = onAttach), contentAlignment = Alignment.Center) {
+    var menu by remember { mutableStateOf(false) }
+    Box(Modifier.size(44.dp).clip(CircleShape).background(Raised).clickable { menu = true }, contentAlignment = Alignment.Center) {
         Icon(painterResource(R.drawable.ph_plus), "Attach image", tint = Fg, modifier = Modifier.size(20.dp))
+        DropdownMenu(menu, { menu = false }, containerColor = Raised) {
+            DropdownMenuItem({ Text("Take photo", color = Fg) }, { menu = false; onCamera() })
+            DropdownMenuItem({ Text("Choose photos", color = Fg) }, { menu = false; onAttach() })
+        }
     }
     Spacer(Modifier.width(8.dp))
     Column(Modifier.weight(1f).clip(RoundedCornerShape(22.dp)).background(Raised)) {

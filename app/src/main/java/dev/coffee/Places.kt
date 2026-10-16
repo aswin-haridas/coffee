@@ -41,7 +41,10 @@ object Places {
     @SuppressLint("MissingPermission")
     fun start(ctx: Context) {
         if (!enabled(ctx) || !permitted(ctx)) return
-        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5 * 60_000L).setMinUpdateIntervalMillis(60_000L).build()
+        // Batched: fixes are still taken every few minutes, but handed over (waking the app and the radio to upload)
+        // at most every 10, which is most of the battery cost. The newest fix of a batch stays fresh enough for place texts.
+        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5 * 60_000L).setMinUpdateIntervalMillis(60_000L)
+            .setMaxUpdateDelayMillis(10 * 60_000L).build()
         runCatching { LocationServices.getFusedLocationProviderClient(ctx).requestLocationUpdates(req, updates(ctx)) }
         thread { upload(ctx) }
     }
