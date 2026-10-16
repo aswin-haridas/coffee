@@ -54,6 +54,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -88,6 +89,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.activity.result.PickVisualMediaRequest
 import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
@@ -105,7 +108,6 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 // Near-black take on the "Apps in ChatGPT" Figma dark tokens (Foundations / Color).
@@ -216,7 +218,8 @@ private fun ChatScreen(onProfile: () -> Unit, onTimeline: () -> Unit) {
     val streaming = Store.job != null
     var input by rememberSaveable { mutableStateOf("") }
     var images by rememberSaveable { mutableStateOf(listOf<String>()) }
-    var reply by rememberSaveable { mutableStateOf("") } // text of the message being replied to
+    var reply by rememberSaveable { mutableStateOf("") } // text of the block being replied to
+    var replyRef by rememberSaveable { mutableLongStateOf(0L) } // and its id
     val scope = rememberCoroutineScope()
     // ponytail: 4 per pick, each ~150 KB on the wire; raise if the backend takes bigger requests
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(4)) { uris ->
@@ -246,10 +249,11 @@ private fun ChatScreen(onProfile: () -> Unit, onTimeline: () -> Unit) {
 
     fun send(text: String) {
         if (text.isBlank() && images.isEmpty()) return
-        Store.send(text.trim(), images, reply)
+        Store.send(text.trim(), images, reply, replyRef)
         input = ""
         images = emptyList()
         reply = ""
+        replyRef = 0L
         scope.launch { listState.animateScrollToItem(0) }
     }
 
@@ -271,7 +275,7 @@ private fun ChatScreen(onProfile: () -> Unit, onTimeline: () -> Unit) {
             if (Store[Places.KEY] == "on") IconButton(onTimeline) { Icon(painterResource(R.drawable.ph_map_pin), "Timeline", tint = Muted) }
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (Store.msgs.isEmpty()) {
+            if (Store.blocks.isEmpty()) {
                 Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 8.dp, vertical = 4.dp)) {
                     listOf(
                         Triple(R.drawable.ph_pencil_simple, "Write or edit", "Help me write "),
@@ -293,7 +297,8 @@ private fun ChatScreen(onProfile: () -> Unit, onTimeline: () -> Unit) {
                 }
             } else {
                 Messages(streaming, listState) {
-                    reply = it
+                    reply = it.text.ifBlank { "Photo" }
+                    replyRef = it.id
                     focus.requestFocus()
                     keyboard?.show()
                 }
@@ -302,74 +307,90 @@ private fun ChatScreen(onProfile: () -> Unit, onTimeline: () -> Unit) {
         Composer(
             value = input, onChange = { input = it }, focus = focus, streaming = streaming,
             images = images, onAttach = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, onCamera = { takePhoto() },
-            onRemoveImage = { images -= it }, reply = reply, onCancelReply = { reply = "" },
+            onRemoveImage = { images -= it }, reply = reply, onCancelReply = { reply = ""; replyRef = 0L },
             onSend = { send(input) }, onMic = { listen(false) }, onVoice = { listen(true) },
         )
     }
 }
 
 @Composable
-private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (String) -> Unit) {
-    val msgs = Store.msgs
-    LaunchedEffect(msgs.size) { listState.animateScrollToItem(0) }
-    // reverseLayout pins the list to the bottom, so streaming text grows upward with no scroll bookkeeping
+private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (Block) -> Unit) {
+    val blocks = Store.blocks
+    // Only a block joining the end scrolls down; older pages loading above leave the view where it is
+    LaunchedEffect(blocks.lastOrNull()?.let { it.key.ifEmpty { "${it.id}" } }) { listState.animateScrollToItem(0) }
+    // Infinite scroll: near the oldest loaded block, fetch the page before it
+    val nearTop by remember { derivedStateOf { listState.layoutInfo.run { (visibleItemsInfo.lastOrNull()?.index ?: 0) >= totalItemsCount - 10 } } }
+    LaunchedEffect(nearTop, blocks.size) { if (nearTop) Store.loadOlder() }
+    val waiting = streaming && blocks.lastOrNull()?.user != false // until Coffee's first block: a step then shows its own spinner
+    // reverseLayout pins the list to the bottom, so new blocks grow upward with no scroll bookkeeping
     LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
-        items(msgs.size, key = { msgs.lastIndex - it }) { r ->
-            val i = msgs.lastIndex - r
-            val m = msgs[i]
-            val last = i == msgs.lastIndex
-            val live = streaming && last
-            val swipe = if (live) Modifier else Modifier.swipeToReply { onReply(m.text.ifBlank { "Photo" }) }
-            if (m.user) {
-                Column(swipe.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (m.images.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()), Arrangement.spacedBy(4.dp)) {
-                        val size = if (m.images.size == 1) 180.dp else 120.dp
-                        m.images.forEach { Thumb(it, Modifier.size(size).clip(RoundedCornerShape(18.dp))) }
-                    }
-                    if (m.text.isNotEmpty() || m.reply.isNotEmpty()) Column(Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(Mine).padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        if (m.reply.isNotEmpty()) Quote(m.reply, Fg, Modifier.padding(bottom = 4.dp))
-                        if (m.text.isNotEmpty()) SelectionContainer { Text(m.text, color = Fg, fontSize = Body, lineHeight = 24.sp) }
+        if (waiting) item(key = "waiting") { Spinner(Modifier.padding(horizontal = 4.dp, vertical = 12.dp)) }
+        // A block the server couldn't store has no id; its place in the list keeps its key unique
+        items(blocks.size, key = { r -> blocks[blocks.lastIndex - r].let { it.key.ifEmpty { if (it.id > 0) "b${it.id}" else "r$r" } } }) { r ->
+            val i = blocks.lastIndex - r
+            val b = blocks[i]
+            val last = i == blocks.lastIndex
+            // A new turn starts with room above it; blocks of one turn sit close together
+            val top = if (blocks.getOrNull(i - 1)?.user != b.user) 16.dp else 4.dp
+            val swipe = if (streaming && last || b.type == "status" || b.type == "reply") Modifier else Modifier.swipeToReply { onReply(b) }
+            val side = if (b.user) Alignment.End else Alignment.Start
+            Column(swipe.fillMaxWidth().padding(top = top), horizontalAlignment = side) {
+                when (b.type) {
+                    "status" -> Step(b.text, running = streaming && last)
+                    "reply" -> Quote(b.text, Fg, Modifier.widthIn(max = 280.dp))
+                    "image" -> Photo(b, Modifier.size(180.dp).clip(RoundedCornerShape(18.dp)))
+                    else -> if (b.user) {
+                        Box(Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(Mine).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            SelectionContainer { Text(b.text, color = Fg, fontSize = Body, lineHeight = 24.sp) }
+                        }
+                    } else {
+                        // Regenerating a check-in would replace it with a reply to an older message
+                        val asked = blocks.subList(0, i).lastOrNull { it.user || it.message }?.user == true
+                        Assistant(b, canRedo = last && !streaming && asked)
                     }
                 }
-            } else {
-                // Regenerating a check-in would replace it with a reply to an older message
-                Assistant(m, canRedo = last && msgs.getOrNull(i - 1)?.user == true, live = live, modifier = swipe)
             }
         }
+        if (Store.more && blocks.isNotEmpty()) item(key = "older") { Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) { Spinner() } }
     }
 }
 
-/** Braille-dot spinner, the terminal kind, in place of "Loading…" text. */
+/** Small ring spinner in place of "Loading…" text. */
 @Composable
-fun Spinner(modifier: Modifier = Modifier) {
-    val frame by produceState(0) { while (true) { delay(80); value++ } }
-    Text("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[frame % 10].toString(), color = Faint, fontSize = Body, lineHeight = 24.sp, modifier = modifier.semantics { contentDescription = "Loading" })
+fun Spinner(modifier: Modifier = Modifier) =
+    CircularProgressIndicator(modifier.size(16.dp).semantics { contentDescription = "Loading" }, color = Faint, strokeWidth = 2.dp)
+
+/** A step Coffee took on the way to its reply: a tick once done, a spinner while running. No bubble: it isn't a message. */
+@Composable
+private fun Step(text: String, running: Boolean) = Row(Modifier.heightIn(min = 28.dp).padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+        if (running) Spinner() else Icon(painterResource(R.drawable.ph_check_circle_fill), null, tint = Faint, modifier = Modifier.size(16.dp))
+    }
+    Spacer(Modifier.width(10.dp))
+    Text(text, color = if (running) Fg else Muted, fontSize = Small, lineHeight = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
 }
 
 @Composable
-private fun Assistant(m: Msg, canRedo: Boolean, live: Boolean, modifier: Modifier) {
+private fun Assistant(b: Block, canRedo: Boolean) {
     val ctx = LocalContext.current
-    Column(modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        val bubble = Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 12.dp, vertical = 8.dp)
-        if (live && m.text.isEmpty()) {
-            Spinner(bubble)
-        } else {
-            Column(bubble) {
-                if (m.reply.isNotEmpty()) Quote(m.reply, Fg, Modifier.padding(bottom = 4.dp))
-                SelectionContainer { Text(m.text, color = if (m.err) Color(0xFFFF8A80) else Fg, fontSize = Body, lineHeight = 24.sp) }
-            }
-        }
-        if (!live) {
-            Row {
-                IconButton({
-                    ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("reply", m.text))
-                }, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_copy), "Copy", tint = Faint, modifier = Modifier.size(16.dp)) }
-                if (canRedo) IconButton(Store::regenerate, Modifier.size(32.dp)) {
-                    Icon(painterResource(R.drawable.ph_arrow_clockwise), "Regenerate", tint = Faint, modifier = Modifier.size(16.dp))
-                }
-            }
+    Box(Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 12.dp, vertical = 8.dp)) {
+        SelectionContainer { Text(b.text, color = if (b.err) Color(0xFFFF8A80) else Fg, fontSize = Body, lineHeight = 24.sp) }
+    }
+    Row {
+        IconButton({
+            ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("reply", b.text))
+        }, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_copy), "Copy", tint = Faint, modifier = Modifier.size(16.dp)) }
+        if (canRedo) IconButton(Store::regenerate, Modifier.size(32.dp)) {
+            Icon(painterResource(R.drawable.ph_arrow_clockwise), "Regenerate", tint = Faint, modifier = Modifier.size(16.dp))
         }
     }
+}
+
+/** An image block's photo: the copy on this phone, or downloaded from the server the first time it's shown. */
+@Composable
+private fun Photo(b: Block, modifier: Modifier) {
+    val path by produceState<String?>(null, b.id, b.path) { value = withContext(Dispatchers.IO) { Store.photo(b)?.path } }
+    path?.let { Thumb(it, modifier) } ?: Box(modifier.background(Raised))
 }
 
 /** The message being replied to, cut to two lines. */

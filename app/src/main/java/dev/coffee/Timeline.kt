@@ -3,7 +3,6 @@ package dev.coffee
 import android.content.Intent
 import android.location.Location
 import android.net.Uri
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -34,23 +33,29 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.BoundingBox
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.CustomZoomButtonsController
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Polyline
+import org.osmdroid.views.overlay.TilesOverlay
+import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import kotlin.math.cos
 
 /** A stay at a place; [lat]/[lon] are null when none of its fixes were precise enough to keep. Times are epoch ms. */
 class Visit(val name: String, val kind: String, val near: String, val arrived: Long, val left: Long, val lat: Double?, val lon: Double?)
@@ -69,7 +74,7 @@ private fun moved(path: List<DoubleArray>, from: Long, to: Long): Float {
     return pts.zipWithNext().sumOf { (a, b) -> Location.distanceBetween(a[0], a[1], b[0], b[1], d); d[0].toDouble() }.toFloat()
 }
 
-/** Google-Maps-Timeline-style day view: a sketch of the path, then each place and the moves between them. */
+/** Google-Maps-Timeline-style day view: a map of the day, then each place and the moves between them. */
 @Composable
 internal fun TimelineScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
@@ -99,8 +104,9 @@ internal fun TimelineScreen(onBack: () -> Unit) {
             r.getOrThrow().let { it.visits.isEmpty() && it.path.isEmpty() } -> Note("Nothing recorded that day")
             else -> {
                 val (visits, path) = r.getOrThrow().let { it.visits to it.path }
+                // Above the list rather than in it, so dragging the map doesn't scroll the list
+                DayMap(path, visits, Modifier.fillMaxWidth().height(300.dp))
                 LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (path.size >= 2) item { Sketch(path, visits) }
                     val pinned = visits.filter { it.lat != null }
                     if (pinned.size >= 2) item {
                         // ponytail: Maps takes ~10 stops in a link; longer days show only their first 10
@@ -149,19 +155,45 @@ private fun Place(v: Visit) {
     }
 }
 
-/** The day's path drawn to fit, places as dots. No map tiles: the shape of the day, with Maps a tap away. */
+/** The day on OpenStreetMap: the path as a line, places as pins (tap one for its name). Tiles are cached in the app's cache. */
 @Composable
-private fun Sketch(path: List<DoubleArray>, visits: List<Visit>) = Canvas(Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp)).background(Raised)) {
-    val k = cos(Math.toRadians(path.map { it[0] }.average())) // shrink longitude away from the equator
-    val xs = path.map { it[1] * k } + visits.mapNotNull { v -> v.lon?.let { it * k } }
-    val ys = path.map { it[0] } + visits.mapNotNull { it.lat }
-    val pad = 24.dp.toPx()
-    val scale = minOf((size.width - 2 * pad) / (xs.max() - xs.min()).coerceAtLeast(1e-6), (size.height - 2 * pad) / (ys.max() - ys.min()).coerceAtLeast(1e-6))
-    // centred both ways, north up
-    val ox = (size.width - (xs.max() - xs.min()) * scale) / 2
-    val oy = (size.height - (ys.max() - ys.min()) * scale) / 2
-    fun at(lat: Double, lon: Double) = Offset((ox + (lon * k - xs.min()) * scale).toFloat(), (size.height - oy - (lat - ys.min()) * scale).toFloat())
-    val line = Path().apply { path.forEachIndexed { i, p -> at(p[0], p[1]).let { if (i == 0) moveTo(it.x, it.y) else lineTo(it.x, it.y) } } }
-    drawPath(line, Muted, style = Stroke(3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-    visits.forEach { v -> if (v.lat != null && v.lon != null) drawCircle(Coral, 6.dp.toPx(), at(v.lat, v.lon)) }
-}
+private fun DayMap(path: List<DoubleArray>, visits: List<Visit>, modifier: Modifier) = AndroidView(
+    modifier = modifier,
+    factory = { c ->
+        Configuration.getInstance().apply {
+            userAgentValue = c.packageName // OSM's tile servers turn away requests without one
+            osmdroidBasePath = c.cacheDir
+            osmdroidTileCache = File(c.cacheDir, "tiles")
+        }
+        MapView(c).apply {
+            setTileSource(TileSourceFactory.MAPNIK)
+            setMultiTouchControls(true)
+            zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
+            overlayManager.tilesOverlay.setColorFilter(TilesOverlay.INVERT_COLORS) // dark, like the rest of the app
+        }
+    },
+    update = { map ->
+        map.overlays.clear()
+        val line = path.map { GeoPoint(it[0], it[1]) }
+        if (line.size >= 2) map.overlays += Polyline(map).apply {
+            setPoints(line)
+            outlinePaint.color = Coral.toArgb()
+            outlinePaint.strokeWidth = 10f
+        }
+        val pins = visits.filter { it.lat != null && it.lon != null }.map { v ->
+            Marker(map).apply {
+                position = GeoPoint(v.lat!!, v.lon!!)
+                title = v.name.replaceFirstChar { it.uppercase() }
+                snippet = "${clock(v.arrived)} – ${clock(v.left)}"
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+            }
+        }
+        map.overlays += pins
+        val all = line + pins.map { it.position }
+        fun fit() = if (all.size >= 2) map.zoomToBoundingBox(BoundingBox.fromGeoPoints(all).increaseByScale(1.4f), false)
+            else { map.controller.setZoom(16.0); map.controller.setCenter(all.first()) }
+        if (map.width > 0) fit() else map.addOnFirstLayoutListener { _, _, _, _, _ -> fit() } // can't zoom to fit before it has a size
+        map.invalidate()
+    },
+    onRelease = { it.onDetach() },
+)

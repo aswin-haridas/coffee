@@ -27,8 +27,9 @@ class PushService : FirebaseMessagingService() {
     // Runs on a Firebase worker thread; wait for the main thread so the process isn't dropped mid-save
     override fun onMessageReceived(msg: RemoteMessage) {
         val text = msg.data["text"] ?: return
+        val b = Block(msg.data["id"]?.toLongOrNull() ?: 0, msg.data["t"]?.toLongOrNull() ?: System.currentTimeMillis(), false, "message", text)
         val done = CountDownLatch(1)
-        main.post { checkIn(this, text); done.countDown() }
+        main.post { checkIn(this, b); done.countDown() }
         done.await()
     }
 
@@ -36,23 +37,20 @@ class PushService : FirebaseMessagingService() {
         const val ID = 1
         private val main = Handler(Looper.getMainLooper())
 
-        /** On launch: send the server our token and show any check-ins it couldn't push. */
+        /** On launch: send the server our token and fetch the blocks it added meanwhile, check-ins whose push didn't arrive included. */
         fun start(ctx: Context) {
             ctx.getSystemService(JobScheduler::class.java).cancelAll() // the polling job from 1.8.x
             FirebaseMessaging.getInstance().token.addOnSuccessListener(::register)
-            thread {
-                val queued = runCatching { Backend.nudges() }.getOrDefault(emptyList())
-                main.post { queued.forEach { checkIn(ctx, it) } }
-            }
+            Store.sync()
         }
 
         private fun register(token: String) {
             thread { runCatching { Backend.registerPush(token) } } // retried on the next launch if offline
         }
 
-        private fun checkIn(ctx: Context, text: String) {
-            Store.nudge(ctx.applicationContext, text)
-            show(ctx, text)
+        private fun checkIn(ctx: Context, b: Block) {
+            Store.nudge(ctx.applicationContext, b)
+            show(ctx, b.text)
         }
 
         /** Shows one of Coffee's messages, unless the chat is on screen. */
