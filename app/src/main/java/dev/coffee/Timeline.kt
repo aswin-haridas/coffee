@@ -29,6 +29,8 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -79,7 +81,8 @@ private fun moved(path: List<DoubleArray>, from: Long, to: Long): Float {
 internal fun TimelineScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
     var date by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
-    val day by produceState<Result<Day>?>(null, date) {
+    var attempt by remember { mutableIntStateOf(0) }
+    val day by produceState<Result<Day>?>(null, date, attempt) {
         value = null
         value = withContext(Dispatchers.IO) { runCatching { Backend.timeline(date) } }
     }
@@ -100,7 +103,10 @@ internal fun TimelineScreen(onBack: () -> Unit) {
         val r = day
         when {
             r == null -> Spinner(Modifier.padding(24.dp))
-            r.isFailure -> Note("Couldn't reach your Coffee server")
+            r.isFailure -> Column {
+                Note("Couldn't reach your Coffee server.")
+                TextButton({ attempt++ }, Modifier.padding(horizontal = 12.dp)) { Text("Try again", color = Fg) }
+            }
             r.getOrThrow().let { it.visits.isEmpty() && it.path.isEmpty() } -> Note("Nothing recorded that day")
             else -> {
                 val (visits, path) = r.getOrThrow().let { it.visits to it.path }

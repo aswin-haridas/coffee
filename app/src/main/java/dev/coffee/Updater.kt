@@ -51,7 +51,11 @@ object Updater {
             override fun onReceive(c: Context, i: Intent) {
                 if (i.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) != id) return
                 app.unregisterReceiver(this)
-                val uri = dm.getUriForDownloadedFile(id) ?: return
+                val uri = dm.getUriForDownloadedFile(id) ?: run {
+                    toast(app, "Couldn't download the update. Coffee will offer it again next time you open it")
+                    dm.remove(id)
+                    return
+                }
                 thread {
                     runCatching { commit(app, uri) }.onFailure { toast(app, "Update failed: ${it.message}") }
                     dm.remove(id)

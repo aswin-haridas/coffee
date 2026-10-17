@@ -183,7 +183,8 @@ object Store {
 
     fun regenerate() {
         while (blocks.lastOrNull()?.user == false) blocks.removeAt(blocks.lastIndex)
-        reply(redo = true)
+        // Retrying a failed send: if the server never got the user's blocks, it's a first reply, not a redo
+        reply(redo = blocks.none { it.id == 0L && it.user })
     }
 
     fun stop() = job?.cancel()
@@ -207,7 +208,11 @@ object Store {
             } catch (_: CancellationException) {
                 // stopped by the user, or a new text: whatever came stays
             } catch (e: Exception) {
-                blocks += Block(0, System.currentTimeMillis(), false, "message", e.message ?: "Network error", key = UUID.randomUUID().toString(), err = true)
+                val msg = when (e) {
+                    is java.net.UnknownHostException, is java.net.ConnectException, is java.net.SocketTimeoutException -> "Couldn't reach your Coffee server."
+                    else -> e.message ?: "Something went wrong."
+                }
+                blocks += Block(0, System.currentTimeMillis(), false, "message", msg, key = UUID.randomUUID().toString(), err = true)
                 sync() // the server may have stored more than reached the phone
             } finally {
                 if (job === me) job = null // a double text may have started the next reply already

@@ -1,6 +1,8 @@
 package dev.coffee
 
 import android.Manifest
+import android.app.Activity
+import android.provider.Settings
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.net.Uri
@@ -91,6 +93,7 @@ import androidx.compose.foundation.border
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.activity.result.PickVisualMediaRequest
 import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
@@ -346,7 +349,7 @@ private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (Blo
                     } else {
                         // Regenerating a check-in would replace it with a reply to an older message
                         val asked = blocks.subList(0, i).lastOrNull { it.user || it.message }?.user == true
-                        Assistant(b, canRedo = last && !streaming && asked)
+                        Assistant(b, canRedo = last && !streaming && (asked || b.err))
                     }
                 }
             }
@@ -376,9 +379,12 @@ private fun Assistant(b: Block, canRedo: Boolean) {
     Box(Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 12.dp, vertical = 8.dp)) {
         SelectionContainer { Text(b.text, color = if (b.err) Color(0xFFFF8A80) else Fg, fontSize = Body, lineHeight = 24.sp) }
     }
+    // A failed reply gets a plain next step instead of copy/regenerate icons
+    if (b.err) { if (canRedo) TextButton(Store::regenerate) { Text("Try again", color = Fg) }; return }
     Row {
         IconButton({
             ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("reply", b.text))
+            if (Build.VERSION.SDK_INT < 33) Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show() // 13+ shows its own
         }, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_copy), "Copy", tint = Faint, modifier = Modifier.size(16.dp)) }
         if (canRedo) IconButton(Store::regenerate, Modifier.size(32.dp)) {
             Icon(painterResource(R.drawable.ph_arrow_clockwise), "Regenerate", tint = Faint, modifier = Modifier.size(16.dp))
@@ -389,8 +395,16 @@ private fun Assistant(b: Block, canRedo: Boolean) {
 /** An image block's photo: the copy on this phone, or downloaded from the server the first time it's shown. */
 @Composable
 private fun Photo(b: Block, modifier: Modifier) {
-    val path by produceState<String?>(null, b.id, b.path) { value = withContext(Dispatchers.IO) { Store.photo(b)?.path } }
-    path?.let { Thumb(it, modifier) } ?: Box(modifier.background(Raised))
+    var attempt by remember { mutableIntStateOf(0) }
+    // null while loading, "" when the download failed
+    val path by produceState<String?>(null, b.id, b.path, attempt) { value = null; value = withContext(Dispatchers.IO) { Store.photo(b)?.path.orEmpty() } }
+    when (val p = path) {
+        null -> Box(modifier.background(Raised), contentAlignment = Alignment.Center) { Spinner() }
+        "" -> Box(modifier.background(Raised).clickable { attempt++ }, contentAlignment = Alignment.Center) {
+            Icon(painterResource(R.drawable.ph_arrow_clockwise), "Couldn't load photo. Tap to retry", tint = Faint, modifier = Modifier.size(20.dp))
+        }
+        else -> Thumb(p, modifier)
+    }
 }
 
 /** The message being replied to, cut to two lines. */
@@ -537,12 +551,18 @@ private fun Profile(onBack: () -> Unit) {
         Store[Places.KEY] = "on"
         Places.start(ctx)
     }
+    // Once Android stops asking (denied twice), the only way forward is Coffee's page in system settings
+    fun denied(permission: String, why: String) {
+        Toast.makeText(ctx, why, Toast.LENGTH_LONG).show()
+        if (!(ctx as Activity).shouldShowRequestPermissionRationale(permission))
+            ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", ctx.packageName, null)))
+    }
     val background = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) placesOn() else Toast.makeText(ctx, "Places needs location access all the time", Toast.LENGTH_LONG).show()
+        if (ok) placesOn() else denied(Manifest.permission.ACCESS_BACKGROUND_LOCATION, "Places needs location access all the time")
     }
     val foreground = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
         when {
-            r[Manifest.permission.ACCESS_FINE_LOCATION] != true -> Toast.makeText(ctx, "Places needs precise location", Toast.LENGTH_LONG).show()
+            r[Manifest.permission.ACCESS_FINE_LOCATION] != true -> denied(Manifest.permission.ACCESS_FINE_LOCATION, "Places needs precise location")
             Build.VERSION.SDK_INT >= 29 -> background.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION) // asked on its own, after foreground
             else -> placesOn()
         }
