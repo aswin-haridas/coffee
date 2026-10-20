@@ -33,6 +33,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -58,7 +59,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -103,6 +103,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -346,12 +347,10 @@ private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (Blo
             Column(swipe.fillMaxWidth().padding(top = top), horizontalAlignment = side) {
                 when (b.type) {
                     "status" -> Step(b.text, running = streaming && last)
-                    "reply" -> Quote(b.text, Fg, Modifier.widthIn(max = 280.dp))
+                    "reply" -> Quote(b.text, Fg, Modifier.widthIn(max = bubbleWidth()))
                     "image" -> Photo(b, Modifier.size(180.dp).clip(RoundedCornerShape(18.dp)))
                     else -> if (b.user) {
-                        Box(Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp)).background(Mine).padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            SelectionContainer { Text(b.text, color = Fg, fontSize = Body, lineHeight = 24.sp) }
-                        }
+                        Bubble(b.text, Mine)
                     } else {
                         // Regenerating a check-in would replace it with a reply to an older message
                         val asked = blocks.subList(0, i).lastOrNull { it.user || it.message }?.user == true
@@ -391,19 +390,36 @@ private fun Step(text: String, running: Boolean) = Row(Modifier.heightIn(min = 2
 
 @Composable
 private fun Assistant(b: Block, canRedo: Boolean) {
-    val ctx = LocalContext.current
-    Box(Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 12.dp, vertical = 8.dp)) {
-        SelectionContainer { Text(b.text, color = if (b.err) Color(0xFFFF8A80) else Fg, fontSize = Body, lineHeight = 24.sp) }
-    }
-    // A failed reply gets a plain next step instead of copy/regenerate icons
+    Bubble(b.text, Raised, if (b.err) Color(0xFFFF8A80) else Fg)
+    // A failed reply gets a plain next step instead of the regenerate icon
     if (b.err) { if (canRedo) TextButton(Store::regenerate) { Text("Try again", color = Fg) }; return }
-    Row {
-        IconButton({
-            ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("reply", b.text))
-            if (Build.VERSION.SDK_INT < 33) Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show() // 13+ shows its own
-        }, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_copy), "Copy", tint = Faint, modifier = Modifier.size(16.dp)) }
-        if (canRedo) IconButton(Store::regenerate, Modifier.size(32.dp)) {
-            Icon(painterResource(R.drawable.ph_arrow_clockwise), "Regenerate", tint = Faint, modifier = Modifier.size(16.dp))
+    if (canRedo) IconButton(Store::regenerate, Modifier.size(32.dp)) {
+        Icon(painterResource(R.drawable.ph_arrow_clockwise), "Regenerate", tint = Faint, modifier = Modifier.size(16.dp))
+    }
+}
+
+/** Bubbles stop at 70% of the screen, like Instagram's, so a long text wraps instead of spanning the chat. */
+@Composable
+private fun bubbleWidth() = (LocalConfiguration.current.screenWidthDp * .7f).dp
+
+/** A text bubble. Hold it for Copy. */
+@Composable
+private fun Bubble(text: String, bg: Color, fg: Color = Fg) {
+    val ctx = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+    var menu by remember { mutableStateOf(false) }
+    Box {
+        Box(
+            Modifier.widthIn(max = bubbleWidth()).clip(RoundedCornerShape(18.dp)).background(bg)
+                .combinedClickable(onClickLabel = null, onLongClickLabel = "Copy", onLongClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); menu = true }) {}
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) { Text(text, color = fg, fontSize = Body, lineHeight = 24.sp) }
+        DropdownMenu(menu, { menu = false }, containerColor = Raised) {
+            DropdownMenuItem({ Text("Copy", color = Fg) }, {
+                menu = false
+                ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("message", text))
+                if (Build.VERSION.SDK_INT < 33) Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show() // 13+ shows its own
+            }, leadingIcon = { Icon(painterResource(R.drawable.ph_copy), null, tint = Fg, modifier = Modifier.size(18.dp)) })
         }
     }
 }
