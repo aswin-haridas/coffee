@@ -19,6 +19,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
@@ -64,6 +65,9 @@ object Store {
     var more by mutableStateOf(true)
         private set
     var job by mutableStateOf<Job?>(null)
+        private set
+    /** Coffee is "typing" its next text: the app holds each one back a little, the way a person takes time to type. */
+    var typing by mutableStateOf(false)
         private set
     private var loading = false
     private val scope = MainScope()
@@ -200,13 +204,23 @@ object Store {
         job = scope.launch {
             val me = coroutineContext[Job]
             var said: Block? = null
+            var held: Block? = null
             try {
                 Backend.chat(system, pending, redo).collect { b ->
+                    if (!b.user && b.message) {
+                        held = b
+                        typing = true
+                        delay((600L + 40L * b.text.length).coerceAtMost(4_000)) // about a fast thumb's typing speed
+                        typing = false
+                        said = b
+                    }
                     upsert(b)
-                    if (!b.user && b.message) said = b
+                    held = null
                 }
             } catch (_: CancellationException) {
-                // stopped by the user, or a new text: whatever came stays
+                // stopped by the user, or a new text: whatever came stays, the text being typed too
+                // ponytail: texts still queued behind it are on the server and show on the next sync, not now
+                held?.let(::upsert)
             } catch (e: Exception) {
                 val msg = when (e) {
                     is java.net.UnknownHostException, is java.net.ConnectException, is java.net.SocketTimeoutException -> "Couldn't reach your Coffee server."
@@ -215,7 +229,7 @@ object Store {
                 blocks += Block(0, System.currentTimeMillis(), false, "message", msg, key = UUID.randomUUID().toString(), err = true)
                 sync() // the server may have stored more than reached the phone
             } finally {
-                if (job === me) job = null // a double text may have started the next reply already
+                if (job === me) { job = null; typing = false } // a double text may have started the next reply already
                 save()
                 said?.let { if (it in blocks) PushService.show(app, it.text) } // only if they left the app while it was replying
             }

@@ -26,6 +26,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -327,7 +332,8 @@ private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (Blo
     val waiting = streaming && blocks.lastOrNull()?.user != false // until Coffee's first block: a step then shows its own spinner
     // reverseLayout pins the list to the bottom, so new blocks grow upward with no scroll bookkeeping
     LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
-        if (waiting) item(key = "waiting") { Spinner(Modifier.padding(horizontal = 4.dp, vertical = 12.dp)) }
+        if (Store.typing) item(key = "typing") { Typing(Modifier.padding(top = 4.dp)) }
+        else if (waiting) item(key = "waiting") { Spinner(Modifier.padding(horizontal = 4.dp, vertical = 12.dp)) }
         // A block the server couldn't store has no id; its place in the list keeps its key unique
         items(blocks.size, key = { r -> blocks[blocks.lastIndex - r].let { it.key.ifEmpty { if (it.id > 0) "b${it.id}" else "r$r" } } }) { r ->
             val i = blocks.lastIndex - r
@@ -362,6 +368,16 @@ private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (Blo
 @Composable
 fun Spinner(modifier: Modifier = Modifier) =
     CircularProgressIndicator(modifier.size(16.dp).semantics { contentDescription = "Loading" }, color = Faint, strokeWidth = 2.dp)
+
+/** Three dots pulsing in turn in Coffee's bubble while its next text is "being typed". */
+@Composable
+private fun Typing(modifier: Modifier = Modifier) {
+    val t by rememberInfiniteTransition(label = "typing").animateFloat(0f, 3f, infiniteRepeatable(tween(1_200, easing = LinearEasing)), label = "dots")
+    Row(modifier.clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 14.dp, vertical = 14.dp).semantics { contentDescription = "Coffee is typing" },
+        horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        repeat(3) { i -> Box(Modifier.size(7.dp).clip(CircleShape).background(Fg.copy(alpha = if (t.toInt() == i) .9f else .3f))) }
+    }
+}
 
 /** A step Coffee took on the way to its reply: a tick once done, a spinner while running. No bubble: it isn't a message. */
 @Composable
