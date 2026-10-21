@@ -378,6 +378,9 @@ object Backend {
                         x.optDouble("lat").takeIf { !it.isNaN() }, x.optDouble("lon").takeIf { !it.isNaN() })
                 },
                 List(p.length()) { p.getJSONArray(it).let { a -> doubleArrayOf(a.getDouble(0), a.getDouble(1), a.getDouble(2)) } },
+                o.optJSONArray("route").let { r ->
+                    List(r?.length() ?: 0) { i -> r!!.getJSONArray(i).let { l -> List(l.length()) { l.getJSONArray(it).let { a -> doubleArrayOf(a.getDouble(0), a.getDouble(1)) } } } }
+                },
             )
         } finally {
             conn.disconnect()
