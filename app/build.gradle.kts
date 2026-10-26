@@ -15,8 +15,8 @@ android {
         applicationId = "dev.coffee"
         minSdk = 26
         targetSdk = 36
-        versionCode = 29
-        versionName = "1.24.0"
+        versionCode = 30
+        versionName = "1.25.0"
         // Key lives in gitignored secrets.properties so it never lands in the public repo.
         val secrets = rootProject.file("secrets.properties").takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
         buildConfigField("String", "CHAT_KEY", "\"${secrets?.getProperty("CHAT_KEY").orEmpty()}\"")
@@ -57,4 +57,5 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging")
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("org.osmdroid:osmdroid-android:6.1.20") // OpenStreetMap tiles for the timeline, no API key
+    testImplementation("junit:junit:4.13.2")
 }

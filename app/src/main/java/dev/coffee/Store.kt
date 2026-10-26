@@ -372,16 +372,48 @@ object Backend {
             val v = o.getJSONArray("visits")
             val p = o.getJSONArray("path")
             return Day(
-                List(v.length()) {
-                    val x = v.getJSONObject(it)
-                    Visit(x.getString("name"), x.getString("kind"), x.optString("near"), x.getLong("arrived"), x.getLong("left"),
-                        x.optDouble("lat").takeIf { !it.isNaN() }, x.optDouble("lon").takeIf { !it.isNaN() })
-                },
+                List(v.length()) { visit(v.getJSONObject(it)) },
                 List(p.length()) { p.getJSONArray(it).let { a -> doubleArrayOf(a.getDouble(0), a.getDouble(1), a.getDouble(2)) } },
                 o.optJSONArray("route").let { r ->
                     List(r?.length() ?: 0) { i -> r!!.getJSONArray(i).let { l -> List(l.length()) { l.getJSONArray(it).let { a -> doubleArrayOf(a.getDouble(0), a.getDouble(1)) } } } }
                 },
             )
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun visit(x: JSONObject) = Visit(
+        x.optLong("id"), x.optString("place"), x.getString("name"), x.getString("kind"), x.optString("near"), x.optString("city"),
+        x.getLong("arrived"), x.getLong("left"), x.optInt("status"), x.optDouble("lat").takeIf { !it.isNaN() }, x.optDouble("lon").takeIf { !it.isNaN() },
+    )
+
+    /** Blocking; call off the main thread. Every visit from [from] to [to] (YYYY-MM-DD, inclusive, at most a year); throws on failure. */
+    fun visits(from: String, to: String): List<Visit> {
+        val conn = URL("https://coffee.aswinharidas.uk/v1/visits?from=$from&to=$to").openConnection() as HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 15_000
+        conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+        try {
+            val v = JSONObject(conn.inputStream.bufferedReader().readText()).getJSONArray("visits")
+            return List(v.length()) { visit(v.getJSONObject(it)) }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Blocking; call off the main thread. Confirms a visit (1), says you weren't there (-1) or undoes that (0), and/or renames its place; throws on failure. */
+    fun fixVisit(id: Long, status: Int? = null, name: String? = null) {
+        val conn = URL("https://coffee.aswinharidas.uk/v1/visits/$id").openConnection() as HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 15_000
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.outputStream.use { it.write(JSONObject().apply { status?.let { put("status", it) }; name?.let { put("name", it) } }.toString().toByteArray()) }
+            if (conn.responseCode !in 200..299) throw IOException("visit: HTTP ${conn.responseCode}")
         } finally {
             conn.disconnect()
         }

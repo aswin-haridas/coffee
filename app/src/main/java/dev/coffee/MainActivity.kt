@@ -141,6 +141,7 @@ class MainActivity : ComponentActivity() {
         Store.init(applicationContext)
         PushService.start(this)
         if (Store[Places.KEY] == "on") { if (Places.permitted(this)) Places.start(this) else Store[Places.KEY] = "" } // revoked in system settings
+        if (Store[Trips.KEY] == "on") { if (Trips.permitted(this)) Trips.start(this) else Store[Trips.KEY] = "" }
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }
@@ -169,10 +170,11 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun App() {
     var screen by rememberSaveable { mutableStateOf("chat") }
-    BackHandler(screen != "chat") { screen = "chat" }
+    BackHandler(screen != "chat") { screen = if (screen == "insights") "timeline" else "chat" }
     when (screen) {
         "profile" -> Profile { screen = "chat" }
-        "timeline" -> TimelineScreen { screen = "chat" }
+        "timeline" -> TimelineScreen(onBack = { screen = "chat" }, onInsights = { screen = "insights" })
+        "insights" -> InsightsScreen { screen = "timeline" }
         else -> ChatScreen(onProfile = { screen = "profile" }, onTimeline = { screen = "timeline" })
     }
     UpdatePrompt()
@@ -477,23 +479,16 @@ private fun Thumb(path: String, modifier: Modifier) {
     bmp?.let { Image(it, null, modifier, contentScale = ContentScale.Crop) } ?: Box(modifier.background(Raised))
 }
 
-/** Figma "Composer": [+] then a 44dp pill — attachment preview, text, mic, 32dp primary button (voice / send / stop). */
+/** One rounded card: reply quote, attachment previews, text, then a quiet tool row — camera and gallery left, mic and primary button (voice / send / stop) right. */
 @Composable
 private fun Composer(
     value: String, onChange: (String) -> Unit, focus: FocusRequester, streaming: Boolean,
     images: List<String>, onAttach: () -> Unit, onCamera: () -> Unit, onRemoveImage: (String) -> Unit, reply: String, onCancelReply: () -> Unit,
     onSend: () -> Unit, onMic: () -> Unit, onVoice: () -> Unit,
-) = Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-    var menu by remember { mutableStateOf(false) }
-    Box(Modifier.size(44.dp).clip(CircleShape).background(Raised).clickable { menu = true }, contentAlignment = Alignment.Center) {
-        Icon(painterResource(R.drawable.ph_plus), "Attach image", tint = Fg, modifier = Modifier.size(20.dp))
-        DropdownMenu(menu, { menu = false }, containerColor = Raised) {
-            DropdownMenuItem({ Text("Take photo", color = Fg) }, { menu = false; onCamera() })
-            DropdownMenuItem({ Text("Choose photos", color = Fg) }, { menu = false; onAttach() })
-        }
-    }
-    Spacer(Modifier.width(8.dp))
-    Column(Modifier.weight(1f).clip(RoundedCornerShape(22.dp)).background(Raised)) {
+) = Column(
+    Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth()
+        .clip(RoundedCornerShape(26.dp)).background(Raised).border(1.dp, Fg.copy(alpha = 0.06f), RoundedCornerShape(26.dp)),
+) {
     if (reply.isNotEmpty()) Row(Modifier.padding(start = 8.dp, top = 8.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Quote(reply, Fg, Modifier.weight(1f))
         IconButton(onCancelReply, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_x), "Cancel reply", tint = Faint, modifier = Modifier.size(16.dp)) }
@@ -509,21 +504,21 @@ private fun Composer(
             }
         }
     }
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        BasicTextField(
-            value, onChange, Modifier.weight(1f).focusRequester(focus),
-            textStyle = TextStyle(Fg, Body, lineHeight = 22.sp), cursorBrush = SolidColor(Fg), maxLines = 6,
-            decorationBox = { inner ->
-                Box {
-                    if (value.isEmpty()) Text("Ask anything", color = Faint, fontSize = Body)
-                    inner()
-                }
-            },
-        )
-        IconButton(onMic, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_microphone), "Dictate", tint = Faint, modifier = Modifier.size(20.dp)) }
+    BasicTextField(
+        value, onChange, Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 4.dp).focusRequester(focus),
+        textStyle = TextStyle(Fg, Body, lineHeight = 22.sp), cursorBrush = SolidColor(Fg), maxLines = 6,
+        decorationBox = { inner ->
+            Box {
+                if (value.isEmpty()) Text("Ask anything", color = Faint, fontSize = Body)
+                inner()
+            }
+        },
+    )
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onCamera, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.ph_camera), "Take photo", tint = Faint, modifier = Modifier.size(20.dp)) }
+        IconButton(onAttach, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.ph_image), "Choose photos", tint = Faint, modifier = Modifier.size(20.dp)) }
+        Spacer(Modifier.weight(1f))
+        IconButton(onMic, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.ph_microphone), "Dictate", tint = Faint, modifier = Modifier.size(20.dp)) }
         Spacer(Modifier.width(4.dp))
         // Send wins over Stop, so a second text can go out while Coffee is still thinking
         val (icon, label, action) = when {
@@ -531,10 +526,9 @@ private fun Composer(
             streaming -> Triple(R.drawable.ph_stop, "Stop", Store::stop)
             else -> Triple(R.drawable.ph_waveform, "Voice", onVoice)
         }
-        Box(Modifier.size(32.dp).clip(CircleShape).background(Coral).clickable { action() }, contentAlignment = Alignment.Center) {
+        Box(Modifier.size(36.dp).clip(CircleShape).background(Coral).clickable { action() }, contentAlignment = Alignment.Center) {
             Icon(painterResource(icon), label, tint = Color.White, modifier = Modifier.size(18.dp))
         }
-    }
     }
 }
 
@@ -547,6 +541,9 @@ private val Personal = listOf(
     },
     Field(Places.KEY, "Places", R.drawable.ph_map_pin, "") {
         if (Store[Places.KEY] == "on") "Coffee texts when you're at a café, mall, shop…" else "Off"
+    },
+    Field(Trips.KEY, "Trips", R.drawable.ph_cpu, "") {
+        if (Store[Trips.KEY] == "on") "Speed, how you travelled and driving style for every trip" else "Off"
     },
     Field("spots", "Home & office", R.drawable.ph_wifi_high, "") {
         val saved = listOf("home", "office").filter { Store["spot_$it"] == "on" }
@@ -599,9 +596,19 @@ private fun Profile(onBack: () -> Unit) {
             else -> placesOn()
         }
     }
+    val activity = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) { Store[Trips.KEY] = "on"; Trips.start(ctx) } else denied(Manifest.permission.ACTIVITY_RECOGNITION, "Trips needs to know when you're moving")
+    }
+    fun toggleTrips() {
+        when {
+            Store[Trips.KEY] == "on" -> { Store[Trips.KEY] = ""; Trips.stop(ctx) }
+            Trips.permitted(ctx) -> { Store[Trips.KEY] = "on"; Trips.start(ctx) }
+            Build.VERSION.SDK_INT >= 29 -> activity.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
+    }
     fun togglePlaces() {
         when {
-            Store[Places.KEY] == "on" -> { Store[Places.KEY] = ""; Places.stop(ctx) }
+            Store[Places.KEY] == "on" -> { Store[Places.KEY] = ""; Places.stop(ctx); Store[Trips.KEY] = ""; Trips.stop(ctx) }
             Places.permitted(ctx) -> placesOn()
             else -> placesInfo = true
         }
@@ -627,9 +634,10 @@ private fun Profile(onBack: () -> Unit) {
                 }
             }
             Section("My Coffee")
-            Group(Personal.filter { it.key != "spots" || Store[Places.KEY] == "on" }) {
+            Group(Personal.filter { (it.key != "spots" && it.key != Trips.KEY) || Store[Places.KEY] == "on" }) {
                 when (it.key) {
                     Places.KEY -> togglePlaces()
+                    Trips.KEY -> toggleTrips()
                     "spots" -> spots = true
                     else -> editing = it
                 }
