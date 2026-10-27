@@ -139,7 +139,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(bars, bars)
         super.onCreate(savedInstanceState)
         Store.init(applicationContext)
-        PushService.start(this)
+        if (Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(false) // the app switcher shows a blank card, not the chat behind the PIN
         if (Store[Places.KEY] == "on") { if (Places.permitted(this)) Places.start(this) else Store[Places.KEY] = "" } // revoked in system settings
         if (Store[Trips.KEY] == "on") { if (Trips.permitted(this)) Trips.start(this) else Store[Trips.KEY] = "" }
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -162,6 +162,16 @@ class MainActivity : ComponentActivity() {
         visible = false
     }
 
+    override fun onStart() {
+        super.onStart()
+        Lock.back()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        Lock.left()
+    }
+
     companion object {
         var visible = false
     }
@@ -170,6 +180,9 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun App() {
     var screen by rememberSaveable { mutableStateOf("chat") }
+    if (Lock.locked) return LockScreen()
+    val ctx = LocalContext.current
+    LaunchedEffect(Unit) { PushService.start(ctx) } // after each unlock, now that there's a token: push token, missed blocks
     BackHandler(screen != "chat") { screen = if (screen == "insights") "timeline" else "chat" }
     when (screen) {
         "profile" -> Profile { screen = "chat" }

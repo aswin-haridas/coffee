@@ -83,6 +83,7 @@ object Store {
     fun init(ctx: Context) {
         if (::file.isInitialized) return
         app = ctx.applicationContext
+        Lock.init(app)
         prefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
         prefs.all.forEach { (k, v) -> settings[k] = v.toString() }
         file = AtomicFile(File(ctx.filesDir, "blocks.json"))
@@ -307,6 +308,23 @@ object Store {
 object Backend {
     private val url = URL("https://coffee.aswinharidas.uk/v1/chat")
 
+    /** Blocking; call off the main thread. Trades the PIN for a token: (200, token), or (401 wrong PIN / 429 locked out, ""); throws when offline. */
+    fun login(pin: String): Pair<Int, String> {
+        val conn = URL("https://coffee.aswinharidas.uk/v1/login").openConnection() as HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 15_000
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.outputStream.use { it.write(JSONObject().put("pin", pin).toString().toByteArray()) }
+            val code = conn.responseCode
+            return code to if (code == 200) JSONObject(conn.inputStream.bufferedReader().readText()).getString("token") else ""
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     /** Blocking; call off the main thread. Tells the server where to push check-ins. */
     fun registerPush(token: String) {
         val conn = URL("https://coffee.aswinharidas.uk/v1/push-token").openConnection() as HttpURLConnection
@@ -315,7 +333,7 @@ object Backend {
         try {
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+            conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
             conn.setRequestProperty("Content-Type", "application/json")
             conn.outputStream.use { it.write(JSONObject().put("token", token).toString().toByteArray()) }
             if (conn.responseCode !in 200..299) throw IOException("push token: HTTP ${conn.responseCode}")
@@ -335,7 +353,7 @@ object Backend {
         try {
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+            conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
             conn.setRequestProperty("Content-Type", "application/json")
             conn.outputStream.use { it.write("{\"fixes\":$fixes}".toByteArray()) }
             return conn.responseCode in 200..299 || conn.responseCode == 400
@@ -352,7 +370,7 @@ object Backend {
         try {
             conn.requestMethod = "PUT"
             conn.doOutput = true
-            conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+            conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
             conn.setRequestProperty("Content-Type", "application/json")
             conn.outputStream.use { it.write(JSONObject().put("wifi", JSONArray(bssids)).toString().toByteArray()) }
             if (conn.responseCode !in 200..299) throw IOException("spot: HTTP ${conn.responseCode}")
@@ -366,7 +384,7 @@ object Backend {
         val conn = URL("https://coffee.aswinharidas.uk/v1/timeline?date=$date").openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 15_000
-        conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+        conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
         try {
             val o = JSONObject(conn.inputStream.bufferedReader().readText())
             val v = o.getJSONArray("visits")
@@ -393,7 +411,7 @@ object Backend {
         val conn = URL("https://coffee.aswinharidas.uk/v1/visits?from=$from&to=$to").openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 15_000
-        conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+        conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
         try {
             val v = JSONObject(conn.inputStream.bufferedReader().readText()).getJSONArray("visits")
             return List(v.length()) { visit(v.getJSONObject(it)) }
@@ -410,7 +428,7 @@ object Backend {
         try {
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+            conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
             conn.setRequestProperty("Content-Type", "application/json")
             conn.outputStream.use { it.write(JSONObject().apply { status?.let { put("status", it) }; name?.let { put("name", it) } }.toString().toByteArray()) }
             if (conn.responseCode !in 200..299) throw IOException("visit: HTTP ${conn.responseCode}")
@@ -424,7 +442,7 @@ object Backend {
         val conn = URL("https://coffee.aswinharidas.uk/v1/blocks?$query").openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 15_000
-        conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+        conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
         try {
             if (conn.responseCode !in 200..299) throw IOException("blocks: HTTP ${conn.responseCode}")
             val o = JSONObject(conn.inputStream.bufferedReader().readText())
@@ -439,7 +457,7 @@ object Backend {
         val conn = URL("https://coffee.aswinharidas.uk/v1/blocks/$id/image").openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 30_000
-        conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+        conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
         try {
             if (conn.responseCode !in 200..299) throw IOException("image: HTTP ${conn.responseCode}")
             val part = File(to.path + ".part")
@@ -458,7 +476,7 @@ object Backend {
         try {
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+            conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
             conn.setRequestProperty("Content-Type", "application/json")
             conn.outputStream.use { it.write(JSONObject().put("blocks", JSONArray(blocks.map(::outgoing))).toString().toByteArray()) }
             if (conn.responseCode !in 200..299) throw IOException(errorOf(conn.errorStream?.bufferedReader()?.readText(), conn.responseCode))
@@ -484,7 +502,7 @@ object Backend {
             try {
                 conn.requestMethod = "POST"
                 conn.doOutput = true
-                conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.CHAT_KEY}")
+                conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
                 conn.setRequestProperty("Content-Type", "application/json")
                 val body = JSONObject().put("system", system).put("blocks", JSONArray(blocks.map(::outgoing))).put("redo", redo)
                 conn.outputStream.use { it.write(body.toString().toByteArray()) }
@@ -510,7 +528,7 @@ object Backend {
     private fun errorOf(body: String?, code: Int): String {
         val msg = runCatching { JSONObject(body!!).getJSONObject("error").getString("message") }.getOrNull()
         return when (code) {
-            401 -> "Invalid chat key."
+            401 -> "Signed out. Reopen Coffee and enter your PIN."
             429 -> "Rate limited. Try again in a moment."
             else -> "API error${if (code > 0) " $code" else ""}: ${msg ?: body ?: "unknown"}"
         }

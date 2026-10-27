@@ -84,6 +84,7 @@ object Places {
 
     /** Blocking; call off the main thread. Sends the queue, and forgets what the server took. */
     fun upload(ctx: Context) {
+        Lock.init(ctx) // may run in a process the app was never opened in
         val p = ctx.getSharedPreferences("places", Context.MODE_PRIVATE)
         val sent = synchronized(lock) { p.getString("queue", "[]").orEmpty() }
         val n = runCatching { JSONArray(sent).length() }.getOrDefault(0)
