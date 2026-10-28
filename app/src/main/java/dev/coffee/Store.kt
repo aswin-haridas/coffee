@@ -308,18 +308,14 @@ object Store {
 object Backend {
     private val url = URL("https://coffee.aswinharidas.uk/v1/chat")
 
-    /** Blocking; call off the main thread. Trades the PIN for a token: (200, token), or (401 wrong PIN / 429 locked out, ""); throws when offline. */
-    fun login(pin: String): Pair<Int, String> {
-        val conn = URL("https://coffee.aswinharidas.uk/v1/login").openConnection() as HttpURLConnection
+    /** Blocking; call off the main thread. The server's answer to the current token: 200 when it's the owner's, 401 when not. */
+    fun check(): Int {
+        val conn = URL("https://coffee.aswinharidas.uk/v1/blocks?limit=1").openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 15_000
+        conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
         try {
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.outputStream.use { it.write(JSONObject().put("pin", pin).toString().toByteArray()) }
-            val code = conn.responseCode
-            return code to if (code == 200) JSONObject(conn.inputStream.bufferedReader().readText()).getString("token") else ""
+            return conn.responseCode
         } finally {
             conn.disconnect()
         }
@@ -548,7 +544,7 @@ object Backend {
     private fun errorOf(body: String?, code: Int): String {
         val msg = runCatching { JSONObject(body!!).getJSONObject("error").getString("message") }.getOrNull()
         return when (code) {
-            401 -> "Signed out. Reopen Coffee and enter your PIN."
+            401 -> "Signed out. Reopen Coffee and sign in."
             429 -> "Rate limited. Try again in a moment."
             else -> "API error${if (code > 0) " $code" else ""}: ${msg ?: body ?: "unknown"}"
         }
