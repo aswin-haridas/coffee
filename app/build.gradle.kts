@@ -55,4 +55,5 @@ dependencies {
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("org.osmdroid:osmdroid-android:6.1.20") // OpenStreetMap tiles for the timeline, no API key
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303") // android.jar's org.json is stubs on the JVM
 }

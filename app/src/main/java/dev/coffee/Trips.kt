@@ -130,6 +130,25 @@ object Trips {
             }
         }
 
+        /** Trips from elsewhere (Google Timeline), with their stats as given; any overlapping a trip already kept is skipped. Returns how many were added. */
+        fun addImported(rows: List<TripRow>): Int {
+            val w = writableDatabase
+            var n = 0
+            w.beginTransaction()
+            try {
+                for (t in rows) {
+                    if (q("SELECT 1 FROM trips WHERE t0<? AND t1>? OR t0=?", t.end, t.start, t.start) { 1 }.isNotEmpty()) continue
+                    w.insert("trips", null, stats(TripStats(t.dist, t.moving, t.avg, t.max, t.mode, t.style, t.score, t.ha, t.hb, t.ht))
+                        .apply { put("t0", t.start); put("t1", t.end) })
+                    n++
+                }
+                w.setTransactionSuccessful()
+            } finally {
+                w.endTransaction()
+            }
+            return n
+        }
+
         // Corrections
         fun setMode(t: TripRow, mode: Mode) = writableDatabase.update("trips", stats(tripStats(path(t), mode)), "t0=?", arrayOf("${t.start}"))
         fun delete(t: TripRow) = writableDatabase.delete("trips", "t0=?", arrayOf("${t.start}"))

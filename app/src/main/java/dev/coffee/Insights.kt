@@ -108,16 +108,19 @@ internal fun InsightsScreen(onBack: () -> Unit) {
                         }
                     }
                 }
+                // Imported drives (Google Timeline) have no style: they count for speed and night driving, not the score
                 val drives = trips.filter { it.mode == Mode.DRIVE }
+                val styled = drives.filter { it.style != null }
                 if (drives.isNotEmpty()) item {
                     val dd = drives.sumOf { it.dist }
-                    val score = (drives.sumOf { it.score * it.dist } / dd).toInt()
-                    fun per100(f: (TripRow) -> Int) = "%.1f".format(drives.sumOf(f) / dd * 100_000)
+                    val sd = styled.sumOf { it.dist }
+                    val score = if (sd > 0) (styled.sumOf { it.score * it.dist } / sd).toInt() else null
+                    fun per100(f: (TripRow) -> Int) = "%.1f".format(styled.sumOf(f) / sd * 100_000)
                     Card("Driving") {
-                        Line("Style", "${styleOf(score).label} · $score/100")
+                        if (score != null) Line("Style", "${styleOf(score).label} · $score/100")
                         Line("Average driving speed", kmh(dd, drives.sumOf { it.moving }))
                         Line("Top speed", "%.0f km/h".format(drives.maxOf { it.max }))
-                        Line("Harsh accel / brake / turn per 100 km", "${per100 { it.ha }} / ${per100 { it.hb }} / ${per100 { it.ht }}")
+                        if (score != null) Line("Harsh accel / brake / turn per 100 km", "${per100 { it.ha }} / ${per100 { it.hb }} / ${per100 { it.ht }}")
                         Line("Driven at night (9 pm – 5 am)", "%.0f%%".format(drives.filter { local(it.start).hour !in 5..20 }.sumOf { it.dist } / dd * 100))
                         Style.entries.forEach { s ->
                             val n = drives.count { it.style == s }

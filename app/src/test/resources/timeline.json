@@ -1,0 +1,37 @@
+{
+  "semanticSegments": [
+    {
+      "startTime": "2024-05-01T08:00:00.000+05:30", "endTime": "2024-05-01T09:00:00.000+05:30",
+      "visit": { "hierarchyLevel": 0, "probability": 0.9,
+        "topCandidate": { "placeId": "ChIJhome", "semanticType": "HOME", "probability": 0.8, "placeLocation": { "latLng": "10.0271°, 76.3082°" } } }
+    },
+    {
+      "startTime": "2024-05-01T08:10:00.000+05:30", "endTime": "2024-05-01T08:40:00.000+05:30",
+      "visit": { "hierarchyLevel": 1, "topCandidate": { "placeId": "ChIJinside", "placeLocation": { "latLng": "10.0272°, 76.3083°" } } }
+    },
+    {
+      "startTime": "2024-05-01T09:00:00.000+05:30", "endTime": "2024-05-01T09:30:00.000+05:30",
+      "activity": { "start": { "latLng": "10.0271°, 76.3082°" }, "end": { "latLng": "10.0500°, 76.3300°" }, "distanceMeters": 9000.0,
+        "topCandidate": { "type": "IN_PASSENGER_VEHICLE", "probability": 0.9 } }
+    },
+    {
+      "startTime": "2024-05-01T09:30:00.000+05:30", "endTime": "2024-05-01T09:31:00.000+05:30",
+      "activity": { "distanceMeters": 40.0, "topCandidate": { "type": "WALKING" } }
+    },
+    {
+      "startTime": "2024-05-01T09:00:00.000+05:30", "endTime": "2024-05-01T11:00:00.000+05:30",
+      "timelinePath": [ { "point": "10.0271°, 76.3082°", "time": "2024-05-01T09:05:00.000+05:30" },
+                        { "point": "10.0400°, 76.3200°", "time": "2024-05-01T09:15:00.000+05:30" } ]
+    },
+    {
+      "startTime": "2024-05-01T09:30:00.000+05:30", "endTime": "2024-05-01T11:00:00.000+05:30",
+      "visit": { "hierarchyLevel": 0, "topCandidate": { "placeId": "ChIJcafe", "semanticType": "UNKNOWN", "placeLocation": { "latLng": "10.0500°, 76.3300°" } } }
+    }
+  ],
+  "timelineObjects": [
+    { "placeVisit": { "location": { "latitudeE7": 100271000, "longitudeE7": 763082000, "placeId": "ChIJold", "name": "Blue Tokai" },
+        "duration": { "startTimestamp": "2021-03-01T05:00:00Z", "endTimestamp": "2021-03-01T06:00:00Z" } } },
+    { "activitySegment": { "distance": 1200, "activityType": "WALKING",
+        "duration": { "startTimestampMs": "1614578400000", "endTimestampMs": "1614579300000" } } }
+  ]
+}

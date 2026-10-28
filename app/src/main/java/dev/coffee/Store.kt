@@ -362,6 +362,26 @@ object Backend {
         }
     }
 
+    /** Blocking; call off the main thread. Imported visits and path fixes (Google Timeline); the server skips ones it has. Throws on failure. */
+    fun importVisits(visits: List<ImportVisit>, path: List<DoubleArray>) {
+        val conn = URL("https://coffee.aswinharidas.uk/v1/visits").openConnection() as HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 60_000
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
+            conn.setRequestProperty("Content-Type", "application/json")
+            val body = JSONObject()
+                .put("visits", JSONArray(visits.map { JSONObject().put("place", it.place).put("name", it.name).put("arrived", it.arrived).put("left", it.left).put("lat", it.lat).put("lon", it.lon) }))
+                .put("path", JSONArray(path.map { JSONArray().put(it[0]).put(it[1]).put(it[2].toLong()) }))
+            conn.outputStream.use { it.write(body.toString().toByteArray()) }
+            if (conn.responseCode !in 200..299) throw IOException("import: HTTP ${conn.responseCode}")
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     /** Blocking; call off the main thread. Saves [bssids] as the Wi-Fi networks at [spot], "home" or "office"; throws on failure. */
     fun setSpot(spot: String, bssids: List<String>) {
         val conn = URL("https://coffee.aswinharidas.uk/v1/spots/$spot").openConnection() as HttpURLConnection

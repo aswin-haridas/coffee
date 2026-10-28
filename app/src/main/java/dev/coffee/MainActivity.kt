@@ -558,6 +558,9 @@ private val Personal = listOf(
     Field(Trips.KEY, "Trips", R.drawable.ph_cpu, "") {
         if (Store[Trips.KEY] == "on") "Speed, how you travelled and driving style for every trip" else "Off"
     },
+    Field("gtimeline", "Import Google Timeline", R.drawable.ph_arrow_clockwise, "") {
+        Store["gtimeline"].ifBlank { "Past trips and places from Timeline.json" }
+    },
     Field("spots", "Home & office", R.drawable.ph_wifi_high, "") {
         val saved = listOf("home", "office").filter { Store["spot_$it"] == "on" }
         if (saved.isEmpty()) "Recognise them by their Wi-Fi" else saved.joinToString(" and ").replaceFirstChar { it.uppercase() } + " saved"
@@ -577,6 +580,14 @@ private fun Profile(onBack: () -> Unit) {
         }
     }
     fun pick() = picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+    // Timeline.json from Google Maps (Settings → Location → Timeline → Export), or Takeout's monthly files
+    val timeline = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) scope.launch {
+            Store["gtimeline"] = "Importing…"
+            Store["gtimeline"] = withContext(Dispatchers.IO) { runCatching { GoogleTimeline.import(ctx, uris) }.getOrElse { "Couldn't read that file" } }
+            Toast.makeText(ctx, Store["gtimeline"], Toast.LENGTH_LONG).show()
+        }
+    }
     var placesInfo by remember { mutableStateOf(false) }
     var spots by remember { mutableStateOf(false) }
     fun saveSpot(name: String) {
@@ -652,6 +663,7 @@ private fun Profile(onBack: () -> Unit) {
                     Places.KEY -> togglePlaces()
                     Trips.KEY -> toggleTrips()
                     "spots" -> spots = true
+                    "gtimeline" -> if (Store["gtimeline"] != "Importing…") timeline.launch(arrayOf("application/json"))
                     else -> editing = it
                 }
             }
