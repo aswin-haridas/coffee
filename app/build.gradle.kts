@@ -15,8 +15,8 @@ android {
         applicationId = "dev.coffee"
         minSdk = 26
         targetSdk = 36
-        versionCode = 32
-        versionName = "1.27.0"
+        versionCode = 33
+        versionName = "1.28.0"
     }
     buildFeatures { buildConfig = true }
     val keys = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
