@@ -179,9 +179,9 @@ private fun Messages(streaming: Boolean, listState: LazyListState) {
                     else -> if (b.user) {
                         Bubble(b.text, Coral)
                     } else {
-                        // Regenerating a check-in would replace it with a reply to an older message
-                        val asked = blocks.subList(0, i).lastOrNull { it.user || it.message }?.user == true
-                        Assistant(b, canRedo = last && !streaming && (asked || b.err))
+                        // Regenerating a check-in would replace it with a reply to an older message. Only the last
+                        // block can redo, so the backwards scan runs for it alone, not for every item on screen.
+                        Assistant(b, canRedo = last && !streaming && (b.err || blocks.subList(0, i).lastOrNull { it.user || it.message }?.user == true))
                     }
                 }
             }

@@ -232,14 +232,28 @@ object Store {
 
 /** The backend authenticates requests, stores blocks in Postgres and calls the model. */
 object Backend {
-    private val url = URL("https://coffee.aswinharidas.uk/v1/chat")
+    /** Doesn't connect yet, so it's safe on the main thread; [auth] before using it. */
+    private fun open(path: String, readTimeout: Int = 15_000) =
+        (URL("https://coffee.aswinharidas.uk/v1/$path").openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            this.readTimeout = readTimeout
+        }
+
+    /** Blocking, as the token may need refreshing; call off the main thread. */
+    private fun HttpURLConnection.auth() = apply { setRequestProperty("Authorization", "Bearer ${Lock.token}") }
+
+    /** Blocking; call off the main thread. POSTs [body] as JSON and throws with the server's message unless it's a 2xx. */
+    private fun HttpURLConnection.post(body: JSONObject) {
+        requestMethod = "POST"
+        doOutput = true
+        setRequestProperty("Content-Type", "application/json")
+        outputStream.use { it.write(body.toString().toByteArray()) }
+        if (responseCode !in 200..299) throw IOException(errorOf(errorStream?.bufferedReader()?.readText(), responseCode))
+    }
 
     /** Blocking; call off the main thread. The server's answer to the current token: 200 when it's the owner's, 401 when not. */
     fun check(): Int {
-        val conn = URL("https://coffee.aswinharidas.uk/v1/blocks?limit=1").openConnection() as HttpURLConnection
-        conn.connectTimeout = 15_000
-        conn.readTimeout = 15_000
-        conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
+        val conn = open("blocks?limit=1").auth()
         try {
             return conn.responseCode
         } finally {
@@ -249,10 +263,7 @@ object Backend {
 
     /** Blocking; call off the main thread. A page of blocks for [query] (before=, after=, limit=) and whether there are more that way. */
     fun blocks(query: String): Pair<List<Block>, Boolean> {
-        val conn = URL("https://coffee.aswinharidas.uk/v1/blocks?$query").openConnection() as HttpURLConnection
-        conn.connectTimeout = 15_000
-        conn.readTimeout = 15_000
-        conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
+        val conn = open("blocks?$query").auth()
         try {
             if (conn.responseCode !in 200..299) throw IOException("blocks: HTTP ${conn.responseCode}")
             val o = JSONObject(conn.inputStream.bufferedReader().readText())
@@ -264,10 +275,7 @@ object Backend {
 
     /** Blocking; call off the main thread. Saves an image block's photo to [to]; throws on failure. */
     fun image(id: Long, to: File) {
-        val conn = URL("https://coffee.aswinharidas.uk/v1/blocks/$id/image").openConnection() as HttpURLConnection
-        conn.connectTimeout = 15_000
-        conn.readTimeout = 30_000
-        conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
+        val conn = open("blocks/$id/image", 30_000).auth()
         try {
             if (conn.responseCode !in 200..299) throw IOException("image: HTTP ${conn.responseCode}")
             val part = File(to.path + ".part")
@@ -280,16 +288,9 @@ object Backend {
 
     /** Blocking; call off the main thread. Stores blocks as they are, times and roles included; throws on failure. */
     fun import(blocks: List<Block>) {
-        val conn = URL("https://coffee.aswinharidas.uk/v1/blocks").openConnection() as HttpURLConnection
-        conn.connectTimeout = 15_000
-        conn.readTimeout = 60_000
+        val conn = open("blocks", 60_000).auth()
         try {
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.outputStream.use { it.write(JSONObject().put("blocks", JSONArray(blocks.map(::outgoing))).toString().toByteArray()) }
-            if (conn.responseCode !in 200..299) throw IOException(errorOf(conn.errorStream?.bufferedReader()?.readText(), conn.responseCode))
+            conn.post(JSONObject().put("blocks", JSONArray(blocks.map(::outgoing))))
         } finally {
             conn.disconnect()
         }
@@ -307,18 +308,10 @@ object Backend {
      * disconnects the socket immediately.
      */
     fun chat(system: String, blocks: List<Block>, redo: Boolean) = callbackFlow {
-        val conn = url.openConnection() as HttpURLConnection
+        val conn = open("chat", 600_000)
         launch(Dispatchers.IO) {
             try {
-                conn.connectTimeout = 15_000
-                conn.readTimeout = 600_000
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.setRequestProperty("Authorization", "Bearer ${Lock.token}")
-                conn.setRequestProperty("Content-Type", "application/json")
-                val body = JSONObject().put("system", system).put("blocks", JSONArray(blocks.map(::outgoing))).put("redo", redo)
-                conn.outputStream.use { it.write(body.toString().toByteArray()) }
-                if (conn.responseCode !in 200..299) throw IOException(errorOf(conn.errorStream?.bufferedReader()?.readText(), conn.responseCode))
+                conn.auth().post(JSONObject().put("system", system).put("blocks", JSONArray(blocks.map(::outgoing))).put("redo", redo))
                 conn.inputStream.bufferedReader().useLines { lines ->
                     for (line in lines) {
                         if (!line.startsWith("data: ")) continue // blank separators
