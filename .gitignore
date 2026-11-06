@@ -9,3 +9,5 @@ keystore.properties
 *.apk
 secrets.properties
 google-services.json
+
+.kotlin/

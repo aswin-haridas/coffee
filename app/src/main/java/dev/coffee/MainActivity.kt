@@ -1,66 +1,43 @@
 package dev.coffee
 
-import android.Manifest
-import android.app.Activity
-import android.provider.Settings
-import android.app.NotificationManager
-import android.content.ActivityNotFoundException
-import android.net.Uri
-import androidx.core.content.FileProvider
-import java.io.File
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -71,53 +48,36 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.border
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.activity.result.PickVisualMediaRequest
 import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 
 // Near-black take on the "Apps in ChatGPT" Figma dark tokens (Foundations / Color).
 internal val Bg = Color(0xFF0D0D0D)       // background primary
@@ -126,8 +86,6 @@ internal val Fg = Color(0xFFFFFFFF)       // text primary
 internal val Muted = Color(0xFFCDCDCD)    // text secondary
 internal val Faint = Color(0xFFAFAFAF)    // text tertiary: placeholders, labels, quiet icons
 internal val Coral = Color(0xFFCC4A2A)    // brand accent (AA with white): primary button, the user's bubbles
-private val Teal = Color(0xFF19B48A)
-private val Mine = Coral                 // the user's bubbles, with Fg text
 
 internal val Body = 16.sp
 internal val Small = 14.sp
@@ -135,210 +93,76 @@ internal val Title = 18.sp
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
-        val bars = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-        enableEdgeToEdge(bars, bars)
+        enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT), SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
         Store.init(applicationContext)
-        if (Store[Places.KEY] == "on") { if (Places.permitted(this)) Places.start(this) else Store[Places.KEY] = "" } // revoked in system settings
-        if (Store[Trips.KEY] == "on") { if (Trips.permitted(this)) Trips.start(this) else Store[Trips.KEY] = "" }
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
-        }
         setContent {
             MaterialTheme(darkColorScheme(primary = Coral, background = Bg, surface = Raised, surfaceContainerHigh = Raised)) { App() }
         }
     }
 
-    // While the chat is on screen, check-ins just appear in it; opening the app clears their notification.
     override fun onResume() {
         super.onResume()
-        visible = true
-        getSystemService(NotificationManager::class.java).cancel(PushService.ID)
-    }
-
-    override fun onPause() {
-        super.onPause()
-        visible = false
-    }
-
-    companion object {
-        var visible = false
+        if (!Lock.locked) Store.sync()
     }
 }
 
 @Composable
 private fun App() {
-    var screen by rememberSaveable { mutableStateOf("chat") }
     if (Lock.locked) return LockScreen()
-    val ctx = LocalContext.current
-    LaunchedEffect(Unit) { PushService.start(ctx) } // after each unlock, now that there's a token: push token, missed blocks
-    BackHandler(screen != "chat") { screen = if (screen == "insights") "timeline" else "chat" }
-    when (screen) {
-        "profile" -> Profile { screen = "chat" }
-        "timeline" -> TimelineScreen(onBack = { screen = "chat" }, onInsights = { screen = "insights" })
-        "insights" -> InsightsScreen { screen = "timeline" }
-        else -> ChatScreen(onProfile = { screen = "profile" }, onTimeline = { screen = "timeline" })
-    }
-    UpdatePrompt()
+    var settings by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) { Store.sync() }
+    BackHandler(settings) { settings = false }
+    if (settings) Profile { settings = false } else ChatScreen { settings = true }
 }
 
 @Composable
-private fun UpdatePrompt() {
-    val ctx = LocalContext.current
-    val release by produceState<Updater.Release?>(null) { value = withContext(Dispatchers.IO) { Updater.check() } }
-    var dismissed by rememberSaveable { mutableStateOf(false) }
-    val r = release ?: return
-    if (dismissed) return
-    AlertDialog(
-        onDismissRequest = { dismissed = true },
-        containerColor = Raised,
-        title = { Text("Update available", color = Fg) },
-        text = { Text("Coffee ${r.version} is out. You have ${BuildConfig.VERSION_NAME}.", color = Muted) },
-        confirmButton = {
-            TextButton({
-                dismissed = true
-                Updater.install(ctx, r)
-                Toast.makeText(ctx, "Downloading update…", Toast.LENGTH_SHORT).show()
-            }) { Text("Update", color = Fg) }
-        },
-        dismissButton = { TextButton({ dismissed = true }) { Text("Later", color = Muted) } },
-    )
-}
-
-/** The user's photo if they set one, else their initials. */
-@Composable
-private fun Avatar(size: Dp, font: TextUnit, modifier: Modifier = Modifier) =
-    Box(modifier.size(size).clip(CircleShape).background(Teal), contentAlignment = Alignment.Center) {
-        val photo = Store["avatar"]
-        if (photo.isNotBlank()) Thumb(photo, Modifier.fillMaxSize()) else {
-            val initials = Store["name"].split(' ').filter { it.isNotBlank() }.take(2).joinToString("") { it.take(1).uppercase() }
-            Text(initials.ifEmpty { "?" }, color = Color.White, fontSize = font)
-        }
-    }
-
-/** Flat 56dp app bar: nav icon, title, trailing actions. */
-@Composable
-internal fun TopBar(nav: @Composable () -> Unit, title: String, actions: @Composable () -> Unit = {}) =
+private fun TopBar(nav: @Composable () -> Unit, title: String) =
     Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         nav()
         Text(title, color = Fg, fontSize = Title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).padding(start = 4.dp))
-        actions()
     }
 
 @Composable
-private fun ChatScreen(onProfile: () -> Unit, onTimeline: () -> Unit) {
-    val ctx = LocalContext.current
-    val streaming = Store.job != null
+private fun ChatScreen(onProfile: () -> Unit) {
     var input by rememberSaveable { mutableStateOf("") }
-    var images by rememberSaveable { mutableStateOf(listOf<String>()) }
-    var reply by rememberSaveable { mutableStateOf("") } // text of the block being replied to
-    var replyRef by rememberSaveable { mutableLongStateOf(0L) } // and its id
-    val scope = rememberCoroutineScope()
-    // ponytail: 4 per pick, each ~150 KB on the wire; raise if the backend takes bigger requests
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(4)) { uris ->
-        if (uris.isNotEmpty()) scope.launch {
-            val saved = withContext(Dispatchers.IO) { uris.map { Store.saveImage(ctx, it) } }
-            images += saved.filterNotNull()
-            if (null in saved) Toast.makeText(ctx, "Couldn't read some images", Toast.LENGTH_SHORT).show()
-        }
-    }
-    // System camera app writes into a cache file we share via FileProvider; no CAMERA permission needed.
-    val shot = remember { File(ctx.cacheDir, "camera/shot.jpg").apply { parentFile!!.mkdirs() } }
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
-        if (ok) scope.launch {
-            val saved = withContext(Dispatchers.IO) { Store.saveImage(ctx, Uri.fromFile(shot)).also { shot.delete() } }
-            if (saved == null) Toast.makeText(ctx, "Couldn't read that photo", Toast.LENGTH_SHORT).show() else images += saved
-        }
-    }
-    fun takePhoto() = try {
-        camera.launch(FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", shot))
-    } catch (_: ActivityNotFoundException) {
-        Toast.makeText(ctx, "No camera app on this device", Toast.LENGTH_SHORT).show()
-    }
-    var autoSend by remember { mutableStateOf(false) }
-    val focus = remember { FocusRequester() }
-    val keyboard = LocalSoftwareKeyboardController.current
+    val streaming = Store.job != null
     val listState = remember { LazyListState() }
-
-    fun send(text: String) {
-        if (text.isBlank() && images.isEmpty()) return
-        Store.send(text.trim(), images, reply, replyRef)
-        input = ""
-        images = emptyList()
-        reply = ""
-        replyRef = 0L
-        scope.launch { listState.animateScrollToItem(0) }
-    }
-
-    val speech = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
-        val heard = r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: return@rememberLauncherForActivityResult
-        if (autoSend) send(heard) else input = "$input $heard".trim()
-    }
-    fun listen(thenSend: Boolean) {
-        autoSend = thenSend
-        try {
-            speech.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM))
-        } catch (_: ActivityNotFoundException) {
-            Toast.makeText(ctx, "No speech recognizer on this device", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
-        TopBar(nav = { IconButton(onProfile, Modifier.semantics { contentDescription = "Settings" }) { Avatar(30.dp, 12.sp) } }, title = "Coffee") {
-            if (Store[Places.KEY] == "on") IconButton(onTimeline) { Icon(painterResource(R.drawable.ph_map_pin), "Timeline", tint = Muted) }
-        }
+    Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding().imePadding()) {
+        TopBar(nav = { IconButton(onProfile) { Icon(painterResource(R.drawable.ph_smiley), "Settings", tint = Muted) } }, title = "Coffee")
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (Store.blocks.isEmpty()) {
-                Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 8.dp, vertical = 4.dp)) {
-                    listOf(
-                        Triple(R.drawable.ph_pencil_simple, "Write or edit", "Help me write "),
-                        Triple(R.drawable.ph_lightbulb, "Explain something", "Explain "),
-                    ).forEach { (icon, label, prompt) ->
-                        Row(
-                            Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable {
-                                input = prompt
-                                focus.requestFocus()
-                                keyboard?.show()
-                            }.padding(horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(painterResource(icon), null, tint = Faint, modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(12.dp))
-                            Text(label, color = Fg, fontSize = Body)
-                        }
-                    }
-                }
-            } else {
-                Messages(streaming, listState) {
-                    reply = it.text.ifBlank { "Photo" }
-                    replyRef = it.id
-                    focus.requestFocus()
-                    keyboard?.show()
-                }
+            if (Store.blocks.isEmpty()) Text("Say hello to Coffee", color = Faint, modifier = Modifier.align(Alignment.Center))
+            else Messages(streaming, listState)
+        }
+        Row(Modifier.fillMaxWidth().padding(12.dp).clip(RoundedCornerShape(26.dp)).background(Raised), verticalAlignment = Alignment.CenterVertically) {
+            BasicTextField(
+                input, { input = it }, Modifier.weight(1f).padding(horizontal = 18.dp, vertical = 14.dp),
+                textStyle = TextStyle(Fg, Body, lineHeight = 22.sp), cursorBrush = SolidColor(Fg), maxLines = 6,
+                decorationBox = { inner -> Box { if (input.isEmpty()) Text("Message Coffee", color = Faint, fontSize = Body); inner() } },
+            )
+            IconButton(
+                onClick = { if (input.isNotBlank()) { Store.send(input.trim()); input = "" } else Store.stop() },
+                enabled = input.isNotBlank() || streaming,
+            ) {
+                Icon(painterResource(if (streaming && input.isBlank()) R.drawable.ph_stop else R.drawable.ph_arrow_up),
+                    if (streaming && input.isBlank()) "Stop" else "Send", tint = if (input.isNotBlank() || streaming) Coral else Faint)
             }
         }
-        Composer(
-            value = input, onChange = { input = it }, focus = focus, streaming = streaming,
-            images = images, onAttach = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, onCamera = { takePhoto() },
-            onRemoveImage = { images -= it }, reply = reply, onCancelReply = { reply = ""; replyRef = 0L },
-            onSend = { send(input) }, onMic = { listen(false) }, onVoice = { listen(true) },
-        )
     }
 }
 
 @Composable
-private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (Block) -> Unit) {
+private fun Messages(streaming: Boolean, listState: LazyListState) {
     val blocks = Store.blocks
     // Only a block joining the end scrolls down; older pages loading above leave the view where it is
     LaunchedEffect(blocks.lastOrNull()?.let { it.key.ifEmpty { "${it.id}" } }) { listState.animateScrollToItem(0) }
     // Infinite scroll: near the oldest loaded block, fetch the page before it
     val nearTop by remember { derivedStateOf { listState.layoutInfo.run { (visibleItemsInfo.lastOrNull()?.index ?: 0) >= totalItemsCount - 10 } } }
     LaunchedEffect(nearTop, blocks.size) { if (nearTop) Store.loadOlder() }
-    val waiting = streaming && blocks.lastOrNull()?.user != false // until Coffee's first block: a step then shows its own spinner
+    val waiting = streaming && blocks.lastOrNull()?.user != false
     // reverseLayout pins the list to the bottom, so new blocks grow upward with no scroll bookkeeping
     LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
-        if (Store.typing) item(key = "typing") { Typing(Modifier.padding(top = 4.dp)) }
-        else if (waiting) item(key = "waiting") { Spinner(Modifier.padding(horizontal = 4.dp, vertical = 12.dp)) }
+        if (waiting) item(key = "waiting") { Spinner(Modifier.padding(horizontal = 4.dp, vertical = 12.dp)) }
         // A block the server couldn't store has no id; its place in the list keeps its key unique
         items(blocks.size, key = { r -> blocks[blocks.lastIndex - r].let { it.key.ifEmpty { if (it.id > 0) "b${it.id}" else "r$r" } } }) { r ->
             val i = blocks.lastIndex - r
@@ -346,15 +170,14 @@ private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (Blo
             val last = i == blocks.lastIndex
             // A new turn starts with room above it; blocks of one turn sit close together
             val top = if (blocks.getOrNull(i - 1)?.user != b.user) 16.dp else 4.dp
-            val swipe = if (streaming && last || b.type == "status" || b.type == "reply") Modifier else Modifier.swipeToReply { onReply(b) }
             val side = if (b.user) Alignment.End else Alignment.Start
-            Column(swipe.fillMaxWidth().padding(top = top), horizontalAlignment = side) {
+            Column(Modifier.fillMaxWidth().padding(top = top), horizontalAlignment = side) {
                 when (b.type) {
-                    "status" -> Step(b.text, running = streaming && last)
+                    "status" -> Text(b.text, color = Faint, fontSize = Small)
                     "reply" -> Quote(b.text, Fg, Modifier.widthIn(max = bubbleWidth()))
                     "image" -> Photo(b, Modifier.size(180.dp).clip(RoundedCornerShape(18.dp)))
                     else -> if (b.user) {
-                        Bubble(b.text, Mine)
+                        Bubble(b.text, Coral)
                     } else {
                         // Regenerating a check-in would replace it with a reply to an older message
                         val asked = blocks.subList(0, i).lastOrNull { it.user || it.message }?.user == true
@@ -363,7 +186,7 @@ private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (Blo
                 }
             }
         }
-        if (Store.more && blocks.isNotEmpty()) item(key = "older") { Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) { Spinner() } }
+        if (Store.loadingOlder) item(key = "older") { Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) { Spinner() } }
     }
 }
 
@@ -372,32 +195,12 @@ private fun Messages(streaming: Boolean, listState: LazyListState, onReply: (Blo
 fun Spinner(modifier: Modifier = Modifier) =
     CircularProgressIndicator(modifier.size(16.dp).semantics { contentDescription = "Loading" }, color = Faint, strokeWidth = 2.dp)
 
-/** Three dots pulsing in turn in Coffee's bubble while its next text is "being typed". */
-@Composable
-private fun Typing(modifier: Modifier = Modifier) {
-    val t by rememberInfiniteTransition(label = "typing").animateFloat(0f, 3f, infiniteRepeatable(tween(1_200, easing = LinearEasing)), label = "dots")
-    Row(modifier.clip(RoundedCornerShape(18.dp)).background(Raised).padding(horizontal = 14.dp, vertical = 14.dp).semantics { contentDescription = "Coffee is typing" },
-        horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-        repeat(3) { i -> Box(Modifier.size(7.dp).clip(CircleShape).background(Fg.copy(alpha = if (t.toInt() == i) .9f else .3f))) }
-    }
-}
-
-/** A step Coffee took on the way to its reply: a tick once done, a spinner while running. No bubble: it isn't a message. */
-@Composable
-private fun Step(text: String, running: Boolean) = Row(Modifier.heightIn(min = 28.dp).padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-    Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
-        if (running) Spinner() else Icon(painterResource(R.drawable.ph_check_circle_fill), null, tint = Faint, modifier = Modifier.size(16.dp))
-    }
-    Spacer(Modifier.width(10.dp))
-    Text(text, color = if (running) Fg else Muted, fontSize = Small, lineHeight = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-}
-
 @Composable
 private fun Assistant(b: Block, canRedo: Boolean) {
     Bubble(b.text, Raised, if (b.err) Color(0xFFFF8A80) else Fg)
     // A failed reply gets a plain next step instead of the regenerate icon
     if (b.err) { if (canRedo) TextButton(Store::regenerate) { Text("Try again", color = Fg) }; return }
-    if (canRedo) IconButton(Store::regenerate, Modifier.size(32.dp)) {
+    if (canRedo) IconButton(Store::regenerate, Modifier.size(48.dp)) {
         Icon(painterResource(R.drawable.ph_arrow_clockwise), "Regenerate", tint = Faint, modifier = Modifier.size(16.dp))
     }
 }
@@ -450,28 +253,6 @@ private fun Quote(text: String, color: Color, modifier: Modifier = Modifier) = T
     modifier = modifier.clip(RoundedCornerShape(10.dp)).background(color.copy(alpha = .1f)).padding(horizontal = 8.dp, vertical = 4.dp),
 )
 
-/** Drag right past 64dp (a tick confirms it) and let go to reply; the bubble springs back either way. */
-@Composable
-private fun Modifier.swipeToReply(onReply: () -> Unit): Modifier {
-    val dx = remember { Animatable(0f) }
-    val scope = rememberCoroutineScope()
-    val haptics = LocalHapticFeedback.current
-    val reply by rememberUpdatedState(onReply)
-    val limit = with(LocalDensity.current) { 64.dp.toPx() }
-    return offset { IntOffset(dx.value.roundToInt(), 0) }.pointerInput(Unit) {
-        fun release() = scope.launch { dx.animateTo(0f) }
-        detectHorizontalDragGestures(
-            onDragEnd = { if (dx.value >= limit) reply(); release() },
-            onDragCancel = { release() },
-        ) { change, amount ->
-            change.consume()
-            val to = (dx.value + amount).coerceIn(0f, limit * 1.25f)
-            if (dx.value < limit && to >= limit) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-            scope.launch { dx.snapTo(to) }
-        }
-    }
-}
-
 /** Downsampled off the main thread; images are stored at <=1024px so half size is plenty for thumbnails. */
 @Composable
 private fun Thumb(path: String, modifier: Modifier) {
@@ -481,265 +262,16 @@ private fun Thumb(path: String, modifier: Modifier) {
     bmp?.let { Image(it, null, modifier, contentScale = ContentScale.Crop) } ?: Box(modifier.background(Raised))
 }
 
-/** One rounded card: reply quote, attachment previews, text, then a quiet tool row — camera and gallery left, mic and primary button (voice / send / stop) right. */
-@Composable
-private fun Composer(
-    value: String, onChange: (String) -> Unit, focus: FocusRequester, streaming: Boolean,
-    images: List<String>, onAttach: () -> Unit, onCamera: () -> Unit, onRemoveImage: (String) -> Unit, reply: String, onCancelReply: () -> Unit,
-    onSend: () -> Unit, onMic: () -> Unit, onVoice: () -> Unit,
-) = Column(
-    Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth()
-        .clip(RoundedCornerShape(26.dp)).background(Raised).border(1.dp, Fg.copy(alpha = 0.06f), RoundedCornerShape(26.dp)),
-) {
-    if (reply.isNotEmpty()) Row(Modifier.padding(start = 8.dp, top = 8.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Quote(reply, Fg, Modifier.weight(1f))
-        IconButton(onCancelReply, Modifier.size(32.dp)) { Icon(painterResource(R.drawable.ph_x), "Cancel reply", tint = Faint, modifier = Modifier.size(16.dp)) }
-    }
-    if (images.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 8.dp, top = 8.dp, end = 8.dp), Arrangement.spacedBy(6.dp)) {
-        images.forEach { image ->
-            Box {
-                Thumb(image, Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)))
-                Box(
-                    Modifier.align(Alignment.TopEnd).padding(2.dp).size(20.dp).clip(CircleShape).background(Bg).border(1.dp, Raised, CircleShape).clickable { onRemoveImage(image) },
-                    contentAlignment = Alignment.Center,
-                ) { Icon(painterResource(R.drawable.ph_x), "Remove image", tint = Fg, modifier = Modifier.size(12.dp)) }
-            }
-        }
-    }
-    BasicTextField(
-        value, onChange, Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 4.dp).focusRequester(focus),
-        textStyle = TextStyle(Fg, Body, lineHeight = 22.sp), cursorBrush = SolidColor(Fg), maxLines = 6,
-        decorationBox = { inner ->
-            Box {
-                if (value.isEmpty()) Text("Ask anything", color = Faint, fontSize = Body)
-                inner()
-            }
-        },
-    )
-    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onCamera, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.ph_camera), "Take photo", tint = Faint, modifier = Modifier.size(20.dp)) }
-        IconButton(onAttach, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.ph_image), "Choose photos", tint = Faint, modifier = Modifier.size(20.dp)) }
-        Spacer(Modifier.weight(1f))
-        IconButton(onMic, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.ph_microphone), "Dictate", tint = Faint, modifier = Modifier.size(20.dp)) }
-        Spacer(Modifier.width(4.dp))
-        // Send wins over Stop, so a second text can go out while Coffee is still thinking
-        val (icon, label, action) = when {
-            value.isNotBlank() || images.isNotEmpty() -> Triple(R.drawable.ph_arrow_up, "Send", onSend)
-            streaming -> Triple(R.drawable.ph_stop, "Stop", Store::stop)
-            else -> Triple(R.drawable.ph_waveform, "Voice", onVoice)
-        }
-        Box(Modifier.size(36.dp).clip(CircleShape).background(Coral).clickable { action() }, contentAlignment = Alignment.Center) {
-            Icon(painterResource(icon), label, tint = Color.White, modifier = Modifier.size(18.dp))
-        }
-    }
-}
-
-private class Field(val key: String, val title: String, val icon: Int, val hint: String, val sub: () -> String)
-
-private val NameField = Field("name", "Name", R.drawable.ph_pencil_simple, "Your name") { Store["name"] }
-private val Personal = listOf(
-    Field("system", "Personalization", R.drawable.ph_smiley, "Custom instructions for every chat") {
-        Store["system"].lineSequence().first().ifBlank { "Custom instructions" }
-    },
-    Field(Places.KEY, "Places", R.drawable.ph_map_pin, "") {
-        if (Store[Places.KEY] == "on") "Coffee texts when you're at a café, mall, shop…" else "Off"
-    },
-    Field(Trips.KEY, "Trips", R.drawable.ph_cpu, "") {
-        if (Store[Trips.KEY] == "on") "Speed, how you travelled and driving style for every trip" else "Off"
-    },
-    Field("gtimeline", "Import Google Timeline", R.drawable.ph_arrow_clockwise, "") {
-        Store["gtimeline"].ifBlank { "Past trips and places from Timeline.json" }
-    },
-    Field("spots", "Home & office", R.drawable.ph_wifi_high, "") {
-        val saved = listOf("home", "office").filter { Store["spot_$it"] == "on" }
-        if (saved.isEmpty()) "Recognise them by their Wi-Fi" else saved.joinToString(" and ").replaceFirstChar { it.uppercase() } + " saved"
-    },
-)
-
 @Composable
 private fun Profile(onBack: () -> Unit) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var editing by remember { mutableStateOf<Field?>(null) }
-    var photoMenu by remember { mutableStateOf(false) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) scope.launch {
-            val path = withContext(Dispatchers.IO) { Store.saveImage(ctx, uri) }
-            if (path == null) Toast.makeText(ctx, "Couldn't read that image", Toast.LENGTH_SHORT).show() else Store.setAvatar(path)
-        }
-    }
-    fun pick() = picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-    // Timeline.json from Google Maps (Settings → Location → Timeline → Export), or Takeout's monthly files
-    val timeline = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) scope.launch {
-            Store["gtimeline"] = "Importing…"
-            Store["gtimeline"] = withContext(Dispatchers.IO) { runCatching { GoogleTimeline.import(ctx, uris) }.getOrElse { "Couldn't read that file" } }
-            Toast.makeText(ctx, Store["gtimeline"], Toast.LENGTH_LONG).show()
-        }
-    }
-    var placesInfo by remember { mutableStateOf(false) }
-    var spots by remember { mutableStateOf(false) }
-    fun saveSpot(name: String) {
-        spots = false
-        val wifi = Places.wifi(ctx)
-        if (wifi.isEmpty()) return Toast.makeText(ctx, "No Wi-Fi networks nearby. Turn on Wi-Fi and try again in a minute", Toast.LENGTH_LONG).show()
-        scope.launch {
-            val ok = withContext(Dispatchers.IO) { runCatching { Backend.setSpot(name, wifi) }.isSuccess }
-            if (ok) Store["spot_$name"] = "on"
-            Toast.makeText(ctx, if (ok) "Saved ${wifi.size} networks as $name" else "Couldn't reach your Coffee server", Toast.LENGTH_SHORT).show()
-        }
-    }
-    fun placesOn() {
-        Store[Places.KEY] = "on"
-        Places.start(ctx)
-    }
-    // Once Android stops asking (denied twice), the only way forward is Coffee's page in system settings
-    fun denied(permission: String, why: String) {
-        Toast.makeText(ctx, why, Toast.LENGTH_LONG).show()
-        if (!(ctx as Activity).shouldShowRequestPermissionRationale(permission))
-            ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", ctx.packageName, null)))
-    }
-    val background = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) placesOn() else denied(Manifest.permission.ACCESS_BACKGROUND_LOCATION, "Places needs location access all the time")
-    }
-    val foreground = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
-        when {
-            r[Manifest.permission.ACCESS_FINE_LOCATION] != true -> denied(Manifest.permission.ACCESS_FINE_LOCATION, "Places needs precise location")
-            Build.VERSION.SDK_INT >= 29 -> background.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION) // asked on its own, after foreground
-            else -> placesOn()
-        }
-    }
-    val activity = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) { Store[Trips.KEY] = "on"; Trips.start(ctx) } else denied(Manifest.permission.ACTIVITY_RECOGNITION, "Trips needs to know when you're moving")
-    }
-    fun toggleTrips() {
-        when {
-            Store[Trips.KEY] == "on" -> { Store[Trips.KEY] = ""; Trips.stop(ctx) }
-            Trips.permitted(ctx) -> { Store[Trips.KEY] = "on"; Trips.start(ctx) }
-            Build.VERSION.SDK_INT >= 29 -> activity.launch(Manifest.permission.ACTIVITY_RECOGNITION)
-        }
-    }
-    fun togglePlaces() {
-        when {
-            Store[Places.KEY] == "on" -> { Store[Places.KEY] = ""; Places.stop(ctx); Store[Trips.KEY] = ""; Trips.stop(ctx) }
-            Places.permitted(ctx) -> placesOn()
-            else -> placesInfo = true
-        }
-    }
-    Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
-        TopBar(nav = { IconButton(onBack) { Icon(painterResource(R.drawable.ph_arrow_left), "Back", tint = Fg) } }, title = "Settings")
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 8.dp).clip(RoundedCornerShape(12.dp)).clickable { editing = NameField }.padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box {
-                    Avatar(56.dp, 22.sp, Modifier.clickable { if (Store["avatar"].isBlank()) pick() else photoMenu = true }.semantics { contentDescription = "Profile photo" })
-                    Box(
-                        Modifier.align(Alignment.BottomEnd).size(20.dp).clip(CircleShape).background(Raised).border(2.dp, Bg, CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(painterResource(R.drawable.ph_pencil_simple), null, tint = Fg, modifier = Modifier.size(11.dp)) }
-                }
-                Spacer(Modifier.width(16.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(Store["name"].ifBlank { "Add your name" }, color = Fg, fontSize = Title, fontWeight = FontWeight.SemiBold)
-                    Text("Tap to edit", color = Faint, fontSize = Small)
-                }
-            }
-            Section("My Coffee")
-            Group(Personal.filter { (it.key != "spots" && it.key != Trips.KEY) || Store[Places.KEY] == "on" }) {
-                when (it.key) {
-                    Places.KEY -> togglePlaces()
-                    Trips.KEY -> toggleTrips()
-                    "spots" -> spots = true
-                    "gtimeline" -> if (Store["gtimeline"] != "Importing…") timeline.launch(arrayOf("application/json"))
-                    else -> editing = it
-                }
-            }
-            Spacer(Modifier.height(24.dp))
-        }
-    }
-    if (photoMenu) AlertDialog(
-        onDismissRequest = { photoMenu = false },
-        containerColor = Raised,
-        title = { Text("Profile photo", color = Fg) },
-        confirmButton = { TextButton({ photoMenu = false; pick() }) { Text("Change", color = Fg) } },
-        dismissButton = { TextButton({ photoMenu = false; Store.setAvatar("") }) { Text("Remove", color = Muted) } },
-    )
-    if (placesInfo) AlertDialog(
-        onDismissRequest = { placesInfo = false },
-        containerColor = Raised,
-        title = { Text("Places", color = Fg) },
-        text = {
-            Text(
-                "Coffee checks your location in the background, even when the app is closed, and sends it to your Coffee server, " +
-                    "which keeps your location history and looks up the place on OpenStreetMap. When you've been at a café, restaurant, " +
-                    "mall or shop for a few minutes, Coffee texts you about it." +
-                    if (Build.VERSION.SDK_INT >= 30) "\n\nOn the next screens, allow precise location, then \"Allow all the time\"." else "",
-                color = Muted,
-            )
-        },
-        confirmButton = {
-            TextButton({
-                placesInfo = false
-                foreground.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-            }) { Text("Continue", color = Fg) }
-        },
-        dismissButton = { TextButton({ placesInfo = false }) { Text("Cancel", color = Muted) } },
-    )
-    if (spots) AlertDialog(
-        onDismissRequest = { spots = false },
-        containerColor = Raised,
-        title = { Text("Home & office", color = Fg) },
-        text = {
-            Text(
-                "Saves the Wi-Fi networks around you right now, so Coffee knows you're there even when GPS can't tell. " +
-                    "Do it once at each place; saving again replaces what was saved.",
-                color = Muted,
-            )
-        },
-        confirmButton = {
-            Row {
-                TextButton({ saveSpot("home") }) { Text("I'm home", color = Fg) }
-                TextButton({ saveSpot("office") }) { Text("I'm at the office", color = Fg) }
-            }
-        },
-        dismissButton = { TextButton({ spots = false }) { Text("Cancel", color = Muted) } },
-    )
-    editing?.let { f ->
-        var v by remember(f) { mutableStateOf(Store[f.key]) }
-        val multi = f.key == "system"
-        AlertDialog(
-            onDismissRequest = { editing = null },
-            containerColor = Raised,
-            title = { Text(f.title, color = Fg) },
-            text = { OutlinedTextField(v, { v = it }, placeholder = { Text(f.hint) }, singleLine = !multi, minLines = if (multi) 4 else 1) },
-            confirmButton = { TextButton({ Store[f.key] = v.trim(); editing = null }) { Text("Save", color = Fg) } },
-            dismissButton = { TextButton({ editing = null }) { Text("Cancel", color = Muted) } },
-        )
-    }
-}
-
-@Composable
-private fun Section(title: String) =
-    Text(title, color = Faint, fontSize = Small, modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp))
-
-@Composable
-private fun Group(rows: List<Field>, onClick: (Field) -> Unit) = Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-    rows.forEachIndexed { i, f ->
-        val top = if (i == 0) 16.dp else 4.dp
-        val bottom = if (i == rows.lastIndex) 16.dp else 4.dp
-        Row(
-            Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(RoundedCornerShape(top, top, bottom, bottom)).background(Raised).clickable { onClick(f) }
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(painterResource(f.icon), null, tint = Muted, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(16.dp))
-            Column {
-                Text(f.title, color = Fg, fontSize = Body)
-                Text(f.sub(), color = Faint, fontSize = Small, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+    var name by remember { mutableStateOf(Store["name"]) }
+    var instructions by remember { mutableStateOf(Store["system"]) }
+    Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding().imePadding()) {
+        TopBar(nav = { IconButton(onBack) { Icon(painterResource(R.drawable.ph_arrow_left), "Back", tint = Muted) } }, title = "Settings")
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Your name") }, singleLine = true)
+            OutlinedTextField(instructions, { instructions = it }, Modifier.fillMaxWidth(), label = { Text("Custom instructions") }, minLines = 4)
+            TextButton({ Store["name"] = name.trim(); Store["system"] = instructions.trim(); onBack() }) { Text("Save", color = Fg) }
         }
     }
 }

@@ -5,7 +5,6 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-    id("com.google.gms.google-services") // reads app/google-services.json (gitignored) from the Firebase console
 }
 
 android {
@@ -15,8 +14,8 @@ android {
         applicationId = "dev.coffee"
         minSdk = 26
         targetSdk = 36
-        versionCode = 33
-        versionName = "1.28.0"
+        versionCode = 34
+        versionName = "1.29.0"
     }
     buildFeatures { buildConfig = true }
     val keys = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
@@ -50,10 +49,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
-    implementation(platform("com.google.firebase:firebase-bom:35.0.0"))
-    implementation("com.google.firebase:firebase-messaging")
-    implementation("com.google.android.gms:play-services-location:21.3.0")
-    implementation("org.osmdroid:osmdroid-android:6.1.20") // OpenStreetMap tiles for the timeline, no API key
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303") // android.jar's org.json is stubs on the JVM
 }

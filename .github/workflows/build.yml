@@ -15,22 +15,7 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - name: Placeholder Firebase config
-        # The real google-services.json is gitignored; the build only needs one that parses.
-        run: |
-          cat > app/google-services.json <<'JSON'
-          {
-            "project_info": { "project_number": "000000000000", "project_id": "coffee-ci", "storage_bucket": "coffee-ci.appspot.com" },
-            "client": [{
-              "client_info": { "mobilesdk_app_id": "1:000000000000:android:0000000000000000", "android_client_info": { "package_name": "dev.coffee" } },
-              "oauth_client": [],
-              "api_key": [{ "current_key": "ci-placeholder" }],
-              "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
-            }],
-            "configuration_version": "1"
-          }
-          JSON
-      - run: ./gradlew --no-daemon assembleDebug lintDebug
+      - run: ./gradlew --no-daemon testDebugUnitTest assembleDebug lintDebug
       - if: always()
         uses: actions/upload-artifact@v4
         with:
