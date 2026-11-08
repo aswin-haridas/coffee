@@ -85,7 +85,7 @@ internal val Raised = Color(0xFF212121)   // background secondary: bubbles, comp
 internal val Fg = Color(0xFFFFFFFF)       // text primary
 internal val Muted = Color(0xFFCDCDCD)    // text secondary
 internal val Faint = Color(0xFFAFAFAF)    // text tertiary: placeholders, labels, quiet icons
-internal val Coral = Color(0xFFCC4A2A)    // brand accent (AA with white): primary button, the user's bubbles
+internal val Coral = Color(0xFFCC4A2A)    // brand accent (AA with white): primary button
 
 internal val Body = 16.sp
 internal val Small = 14.sp
@@ -177,7 +177,7 @@ private fun Messages(streaming: Boolean, listState: LazyListState) {
                     "reply" -> Quote(b.text, Fg, Modifier.widthIn(max = bubbleWidth()))
                     "image" -> Photo(b, Modifier.size(180.dp).clip(RoundedCornerShape(18.dp)))
                     else -> if (b.user) {
-                        Bubble(b.text, Coral)
+                        MessageText(b.text, bubble = true)
                     } else {
                         // Regenerating a check-in would replace it with a reply to an older message. Only the last
                         // block can redo, so the backwards scan runs for it alone, not for every item on screen.
@@ -197,7 +197,7 @@ fun Spinner(modifier: Modifier = Modifier) =
 
 @Composable
 private fun Assistant(b: Block, canRedo: Boolean) {
-    Bubble(b.text, Raised, if (b.err) Color(0xFFFF8A80) else Fg)
+    MessageText(b.text, bubble = false, fg = if (b.err) Color(0xFFFF8A80) else Fg)
     // A failed reply gets a plain next step instead of the regenerate icon
     if (b.err) { if (canRedo) TextButton(Store::regenerate) { Text("Try again", color = Fg) }; return }
     if (canRedo) IconButton(Store::regenerate, Modifier.size(48.dp)) {
@@ -205,21 +205,26 @@ private fun Assistant(b: Block, canRedo: Boolean) {
     }
 }
 
-/** Bubbles stop at 70% of the screen, like Instagram's, so a long text wraps instead of spanning the chat. */
+/** User bubbles and quoted messages leave room beside them; assistant text uses the full chat width. */
 @Composable
 private fun bubbleWidth() = (LocalConfiguration.current.screenWidthDp * .7f).dp
 
-/** A text bubble. Hold it for Copy. */
+/** Message text, with an optional user bubble. Hold either style for Copy. */
 @Composable
-private fun Bubble(text: String, bg: Color, fg: Color = Fg) {
+private fun MessageText(text: String, bubble: Boolean, fg: Color = Fg) {
     val ctx = LocalContext.current
     val haptics = LocalHapticFeedback.current
     var menu by remember { mutableStateOf(false) }
-    Box {
+    val messageModifier = if (bubble) {
+        Modifier.widthIn(max = bubbleWidth()).clip(RoundedCornerShape(18.dp)).background(Raised)
+    } else {
+        Modifier.fillMaxWidth()
+    }
+    Box(if (bubble) Modifier else Modifier.fillMaxWidth()) {
         Box(
-            Modifier.widthIn(max = bubbleWidth()).clip(RoundedCornerShape(18.dp)).background(bg)
+            messageModifier
                 .combinedClickable(onClickLabel = null, onLongClickLabel = "Copy", onLongClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); menu = true }) {}
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = if (bubble) 12.dp else 0.dp, vertical = 8.dp),
         ) { Text(text, color = fg, fontSize = Body, lineHeight = 24.sp) }
         DropdownMenu(menu, { menu = false }, containerColor = Raised) {
             DropdownMenuItem({ Text("Copy", color = Fg) }, {
