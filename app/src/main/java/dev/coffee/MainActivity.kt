@@ -15,6 +15,8 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -50,6 +52,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,6 +71,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import android.graphics.BitmapFactory
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalConfiguration
@@ -118,9 +122,9 @@ private fun App() {
 
 @Composable
 private fun TopBar(nav: @Composable () -> Unit, title: String) =
-    Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         nav()
-        Text(title, color = Fg, fontSize = Title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).padding(start = 4.dp))
+        Text(title, color = Fg, fontSize = 20.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f).padding(start = 4.dp))
     }
 
 @Composable
@@ -128,24 +132,47 @@ private fun ChatScreen(onProfile: () -> Unit) {
     var input by rememberSaveable { mutableStateOf("") }
     val streaming = Store.job != null
     val listState = remember { LazyListState() }
+    val scope = rememberCoroutineScope()
+    val showScrollToBottom by remember { derivedStateOf { listState.firstVisibleItemIndex > 1 } }
     Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding().imePadding()) {
         TopBar(nav = { IconButton(onProfile) { Icon(painterResource(R.drawable.ph_smiley), "Settings", tint = Muted) } }, title = "Coffee")
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (Store.blocks.isEmpty()) Text("Say hello to Coffee", color = Faint, modifier = Modifier.align(Alignment.Center))
+            if (Store.blocks.isEmpty()) Column(
+                Modifier.align(Alignment.Center).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("What can I help with?", color = Fg, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+                Text("Ask anything, or think out loud.", color = Faint, fontSize = Small)
+            }
             else Messages(streaming, listState)
+            if (showScrollToBottom) IconButton(
+                onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
+                    .size(48.dp).clip(CircleShape).background(Raised),
+            ) {
+                Icon(painterResource(R.drawable.ph_arrow_down), "Scroll to latest message", tint = Fg, modifier = Modifier.size(20.dp))
+            }
         }
-        Row(Modifier.fillMaxWidth().padding(12.dp).clip(RoundedCornerShape(26.dp)).background(Raised), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).clip(RoundedCornerShape(28.dp)).background(Raised).animateContentSize().padding(4.dp), verticalAlignment = Alignment.Bottom) {
             BasicTextField(
-                input, { input = it }, Modifier.weight(1f).padding(horizontal = 18.dp, vertical = 14.dp),
+                input, { input = it }, Modifier.weight(1f).padding(horizontal = 16.dp, vertical = 12.dp),
                 textStyle = TextStyle(Fg, Body, lineHeight = 22.sp), cursorBrush = SolidColor(Fg), maxLines = 6,
-                decorationBox = { inner -> Box { if (input.isEmpty()) Text("Message Coffee", color = Faint, fontSize = Body); inner() } },
+                decorationBox = { inner -> Box { if (input.isEmpty()) Text("Ask anything", color = Faint, fontSize = Body); inner() } },
             )
             IconButton(
                 onClick = { if (input.isNotBlank()) { Store.send(input.trim()); input = "" } else Store.stop() },
                 enabled = input.isNotBlank() || streaming,
+                modifier = Modifier.size(48.dp),
             ) {
-                Icon(painterResource(if (streaming && input.isBlank()) R.drawable.ph_stop else R.drawable.ph_arrow_up),
-                    if (streaming && input.isBlank()) "Stop" else "Send", tint = if (input.isNotBlank() || streaming) Coral else Faint)
+                Box(
+                    Modifier.size(36.dp).clip(CircleShape).background(if (input.isNotBlank() || streaming) Fg else Muted.copy(alpha = .15f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(painterResource(if (streaming && input.isBlank()) R.drawable.ph_stop else R.drawable.ph_arrow_up),
+                        if (streaming && input.isBlank()) "Stop" else "Send", tint = if (input.isNotBlank() || streaming) Bg else Faint,
+                        modifier = Modifier.size(20.dp))
+                }
             }
         }
     }
@@ -161,7 +188,7 @@ private fun Messages(streaming: Boolean, listState: LazyListState) {
     LaunchedEffect(nearTop, blocks.size) { if (nearTop) Store.loadOlder() }
     val waiting = streaming && blocks.lastOrNull()?.user != false
     // reverseLayout pins the list to the bottom, so new blocks grow upward with no scroll bookkeeping
-    LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = true, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
         if (waiting) item(key = "waiting") { Spinner(Modifier.padding(horizontal = 4.dp, vertical = 12.dp)) }
         // A block the server couldn't store has no id; its place in the list keeps its key unique
         items(blocks.size, key = { r -> blocks[blocks.lastIndex - r].let { it.key.ifEmpty { if (it.id > 0) "b${it.id}" else "r$r" } } }) { r ->
@@ -169,7 +196,7 @@ private fun Messages(streaming: Boolean, listState: LazyListState) {
             val b = blocks[i]
             val last = i == blocks.lastIndex
             // A new turn starts with room above it; blocks of one turn sit close together
-            val top = if (blocks.getOrNull(i - 1)?.user != b.user) 16.dp else 4.dp
+            val top = if (blocks.getOrNull(i - 1)?.user != b.user) 24.dp else 4.dp
             val side = if (b.user) Alignment.End else Alignment.Start
             Column(Modifier.fillMaxWidth().padding(top = top), horizontalAlignment = side) {
                 when (b.type) {
@@ -216,7 +243,7 @@ private fun MessageText(text: String, bubble: Boolean, fg: Color = Fg) {
     val haptics = LocalHapticFeedback.current
     var menu by remember { mutableStateOf(false) }
     val messageModifier = if (bubble) {
-        Modifier.widthIn(max = bubbleWidth()).clip(RoundedCornerShape(18.dp)).background(Raised)
+        Modifier.widthIn(max = bubbleWidth()).clip(RoundedCornerShape(24.dp)).background(Raised)
     } else {
         Modifier.fillMaxWidth()
     }
@@ -224,7 +251,7 @@ private fun MessageText(text: String, bubble: Boolean, fg: Color = Fg) {
         Box(
             messageModifier
                 .combinedClickable(onClickLabel = null, onLongClickLabel = "Copy", onLongClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); menu = true }) {}
-                .padding(horizontal = if (bubble) 12.dp else 0.dp, vertical = 8.dp),
+                .padding(horizontal = if (bubble) 16.dp else 0.dp, vertical = if (bubble) 12.dp else 8.dp),
         ) { Text(text, color = fg, fontSize = Body, lineHeight = 24.sp) }
         DropdownMenu(menu, { menu = false }, containerColor = Raised) {
             DropdownMenuItem({ Text("Copy", color = Fg) }, {
