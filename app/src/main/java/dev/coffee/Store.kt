@@ -244,14 +244,16 @@ object Backend {
 
     /**
      * Signs the request with the key this build shares with the server, which answers nothing else: the HMAC-SHA256 of
-     * "time\nMETHOD\n/path?query\nhex(sha256(body))". Set the method first.
+     * "time\nnonce\nMETHOD\n/path?query\nhex(sha256(body))". Set the method first.
      */
     private fun HttpURLConnection.sign(body: ByteArray = ByteArray(0)) = apply {
         val ts = (System.currentTimeMillis() / 1000).toString()
         val hash = MessageDigest.getInstance("SHA-256").digest(body).joinToString("") { "%02x".format(it) }
         val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(BuildConfig.APP_KEY.toByteArray(), "HmacSHA256")) }
-        val sig = mac.doFinal("$ts\n$requestMethod\n${url.file}\n$hash".toByteArray())
+        val nonce = UUID.randomUUID().toString() // two identical requests in one second still sign differently
+        val sig = mac.doFinal("$ts\n$nonce\n$requestMethod\n${url.file}\n$hash".toByteArray())
         setRequestProperty("X-Coffee-Time", ts)
+        setRequestProperty("X-Coffee-Nonce", nonce)
         setRequestProperty("X-Coffee-Sig", Base64.encodeToString(sig, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP))
     }
 
