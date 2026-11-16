@@ -16,6 +16,9 @@ android {
         targetSdk = 36
         versionCode = 34
         versionName = "1.29.0"
+        // Signs every request so the server answers only this app; see the backend's auth.go
+        val secrets = rootProject.file("secrets.properties").takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
+        buildConfigField("String", "APP_KEY", "\"${secrets?.getProperty("COFFEE_APP_KEY").orEmpty()}\"")
     }
     buildFeatures { buildConfig = true }
     val keys = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }

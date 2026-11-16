@@ -109,6 +109,11 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         if (!Lock.locked) Store.sync()
     }
+
+    override fun onStop() {
+        super.onStop()
+        Lock.locked = true
+    }
 }
 
 @Composable
@@ -304,6 +309,28 @@ private fun Profile(onBack: () -> Unit) {
             OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Your name") }, singleLine = true)
             OutlinedTextField(instructions, { instructions = it }, Modifier.fillMaxWidth(), label = { Text("Custom instructions") }, minLines = 4)
             TextButton({ Store["name"] = name.trim(); Store["system"] = instructions.trim(); onBack() }) { Text("Save", color = Fg) }
+            ChangePin()
         }
     }
+}
+
+@Composable
+private fun ChangePin() {
+    var current by remember { mutableStateOf("") }
+    var new by remember { mutableStateOf("") }
+    var again by remember { mutableStateOf("") }
+    var message by remember { mutableStateOf("") }
+    Text("Change PIN", color = Fg, fontSize = Title, modifier = Modifier.padding(top = 16.dp))
+    PinField(current, { current = it; message = "" }, "Current PIN")
+    PinField(new, { new = it; message = "" }, "New PIN (4–8 digits)")
+    PinField(again, { again = it; message = "" }, "New PIN again")
+    if (message.isNotEmpty()) Text(message, color = Muted, fontSize = Small)
+    TextButton({
+        message = when {
+            !Lock.valid(new) -> "The new PIN needs 4 to 8 digits"
+            new != again -> "The new PINs don't match"
+            Lock.change(current, new) -> { current = ""; new = ""; again = ""; "PIN changed" }
+            else -> "Current PIN is wrong"
+        }
+    }) { Text("Change PIN", color = Fg) }
 }

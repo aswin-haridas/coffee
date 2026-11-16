@@ -2,7 +2,7 @@ package dev.coffee
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Base64
+import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -24,136 +24,73 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
+import java.security.MessageDigest
 
 /**
- * Coffee signs in with a BigShelf account: BigShelf's login gives a 15-minute access token, which the Coffee server
- * accepts for its owner, and a 7-day refresh token (BigShelf's `refresh_token` cookie) that [token] trades for a new
- * pair whenever the access token is about to run out. So the session is BigShelf's, and stays alive while Coffee
- * keeps using it (location uploads do, in the background). The password is only asked again when the session ends.
+ * Coffee opens behind a PIN, 8882 until it's changed in Settings, and locks again whenever it leaves the screen.
+ * Only a hash of the PIN is kept. Five wrong tries in a row wait 30 seconds before the next.
  */
 object Lock {
-    private const val BIGSHELF = "https://bigshelf.aswinharidas.uk/api/v1/auth"
+    private const val DEFAULT = "8882"
     var locked by mutableStateOf(true)
     private lateinit var prefs: SharedPreferences
+    private var wrong = 0
+    private var waitUntil = 0L
 
-    /** Safe to call often; background work calls it before reaching the server. */
     fun init(ctx: Context) {
         if (::prefs.isInitialized) return
         prefs = ctx.applicationContext.getSharedPreferences("auth", Context.MODE_PRIVATE)
-        signedIn = prefs.getString("refresh", "").orEmpty().isNotEmpty()
-        locked = !signedIn
+        prefs.edit().remove("token").remove("refresh").apply() // BigShelf sign-in from before the PIN
     }
 
-    var signedIn by mutableStateOf(false)
-        private set
+    private fun hash(pin: String) =
+        MessageDigest.getInstance("SHA-256").digest("coffee:$pin".toByteArray()).joinToString("") { "%02x".format(it) }
 
-    private fun save(access: String?, refresh: String?) {
-        prefs.edit().clear().putString("token", access).putString("refresh", refresh).commit() // the old refresh token is already spent
-        signedIn = refresh != null
-        if (!signedIn) locked = true
+    private fun matches(pin: String) = MessageDigest.isEqual(hash(pin).toByteArray(), prefs.getString("pin", hash(DEFAULT))!!.toByteArray())
+
+    /** Seconds left before another try is allowed, 0 when one is. */
+    fun cooldown() = ((waitUntil - SystemClock.elapsedRealtime() + 999) / 1000).coerceAtLeast(0)
+
+    /** Unlocks on the right PIN. */
+    fun unlock(pin: String): Boolean {
+        if (cooldown() > 0) return false
+        if (matches(pin)) { wrong = 0; locked = false; return true }
+        if (++wrong >= 5) { wrong = 0; waitUntil = SystemClock.elapsedRealtime() + 30_000 }
+        return false
     }
 
-    /**
-     * Blocking; call off the main thread. The access token, refreshed first if it has under a minute left. Synchronized
-     * because BigShelf rotates the refresh token and treats a reused one as stolen, signing out everywhere.
-     */
-    val token: String
-        @Synchronized get() {
-            val access = prefs.getString("token", "").orEmpty()
-            if (signedIn && expiry(access) < System.currentTimeMillis() / 1000 + 60) runCatching { refresh() }
-            return prefs.getString("token", "").orEmpty()
-        }
+    fun valid(pin: String) = pin.length in 4..8 && pin.all(Char::isDigit)
 
-    private fun expiry(jwt: String) =
-        runCatching { JSONObject(String(Base64.decode(jwt.split(".")[1], Base64.URL_SAFE))).getLong("exp") }.getOrDefault(0L)
-
-    /** Blocking; call off the main thread. BigShelf's response code: 200 signed in, 401 wrong login, 400 inactive account. Throws when offline. */
-    fun signIn(identifier: String, password: String): Int =
-        post("/login", JSONObject().put("identifier", identifier).put("password", password).toString(), null)
-
-    /** Forgets the session here and ends it at BigShelf, if it can be reached. */
-    fun signOut() {
-        val refresh = prefs.getString("refresh", "").orEmpty()
-        save(null, null)
-        if (refresh.isNotEmpty()) runCatching { post("/logout", "{}", refresh) }
-    }
-
-    // Throws when offline, which keeps the old pair for the next try. Any other failure means the session is over.
-    private fun refresh() {
-        val code = post("/refresh", "{}", prefs.getString("refresh", ""))
-        if (code != 200 && code < 500) save(null, null)
-    }
-
-    /** Stores the new access and refresh tokens when BigShelf hands them out. */
-    private fun post(path: String, body: String, refresh: String?): Int {
-        val conn = URL(BIGSHELF + path).openConnection() as HttpURLConnection
-        conn.connectTimeout = 15_000
-        conn.readTimeout = 15_000
-        try {
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/json")
-            if (refresh != null) conn.setRequestProperty("Cookie", "refresh_token=$refresh")
-            conn.outputStream.use { it.write(body.toByteArray()) }
-            val code = conn.responseCode
-            if (code == 200 && path != "/logout") {
-                val access = JSONObject(conn.inputStream.bufferedReader().readText()).getString("access_token")
-                val cookie = conn.headerFields.filterKeys { it.equals("Set-Cookie", true) }.values.flatten()
-                    .first { it.startsWith("refresh_token=") }.substringBefore(";").substringAfter("=")
-                save(access, cookie)
-            }
-            return code
-        } finally {
-            conn.disconnect()
-        }
+    /** Sets [new] as the PIN when [current] is right. */
+    fun change(current: String, new: String): Boolean {
+        if (!valid(new) || cooldown() > 0 || !matches(current)) return false
+        prefs.edit().putString("pin", hash(new)).apply()
+        return true
     }
 }
 
-/** Covers the app with the BigShelf sign-in while there's no session. */
+/** Covers the app until the PIN is entered. */
 @Composable
 fun LockScreen() {
-    val scope = rememberCoroutineScope()
-    var identifier by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
+    var pin by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
     fun submit() {
-        if (busy || identifier.isBlank() || password.isEmpty()) return
-        busy = true
-        message = ""
-        scope.launch {
-            val r = withContext(Dispatchers.IO) {
-                runCatching {
-                    val code = Lock.signIn(identifier.trim(), password)
-                    // BigShelf signup is open; the Coffee server only lets its owner in
-                    if (code == 200 && Backend.check() == 401) { Lock.signOut(); -1 } else code
-                }
-            }
-            busy = false
-            message = when (r.getOrNull()) {
-                200 -> { password = ""; Lock.locked = false; "" }
-                401 -> "Wrong username, email or password"
-                400 -> "This BigShelf account is inactive"
-                -1 -> "This account isn't the one Coffee belongs to"
-                null -> "Can't reach BigShelf"
-                else -> "Server error ${r.getOrNull()}. Try again"
-            }
-        }
+        if (pin.isEmpty()) return
+        if (!Lock.unlock(pin)) message = Lock.cooldown().let { if (it > 0) "Too many tries. Wait ${it}s" else "Wrong PIN" }
+        pin = ""
     }
     Column(
         Modifier.fillMaxSize().background(Bg).safeDrawingPadding().imePadding().padding(horizontal = 32.dp),
@@ -161,23 +98,21 @@ fun LockScreen() {
     ) {
         Icon(painterResource(R.drawable.ph_lock), null, tint = Muted, modifier = Modifier.size(28.dp))
         Spacer(Modifier.height(16.dp))
-        Text("Sign in with BigShelf", color = Fg, fontSize = Title)
+        Text("Enter PIN", color = Fg, fontSize = Title)
         Spacer(Modifier.height(24.dp))
-        OutlinedTextField(
-            identifier, { identifier = it }, Modifier.fillMaxWidth(), label = { Text("Username or email") }, singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
-        )
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            password, { password = it }, Modifier.fillMaxWidth(), label = { Text("Password") }, singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
-            keyboardActions = KeyboardActions(onGo = { submit() }),
-        )
+        PinField(pin, { pin = it; message = "" }, "PIN", Modifier.focusRequester(focus), ::submit)
         Spacer(Modifier.height(12.dp))
         Text(message, color = Coral, fontSize = Small, modifier = Modifier.height(20.dp))
         Spacer(Modifier.height(12.dp))
-        Button(::submit, Modifier.fillMaxWidth(), enabled = !busy) { Text(if (busy) "Signing in…" else "Sign in", color = Fg) }
+        Button(::submit, Modifier.fillMaxWidth()) { Text("Unlock", color = Fg) }
     }
 }
 
+@Composable
+fun PinField(value: String, onChange: (String) -> Unit, label: String, modifier: Modifier = Modifier, onDone: (() -> Unit)? = null) =
+    OutlinedTextField(
+        value, { v -> if (v.length <= 8 && v.all(Char::isDigit)) onChange(v) }, modifier.fillMaxWidth(), label = { Text(label) }, singleLine = true,
+        visualTransformation = PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = if (onDone != null) ImeAction.Go else ImeAction.Next),
+        keyboardActions = KeyboardActions(onGo = { onDone?.invoke() }),
+    )

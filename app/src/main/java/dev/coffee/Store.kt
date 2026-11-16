@@ -24,7 +24,10 @@ import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import java.util.UUID
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * One block of the chat: a [type] of "message", "image" (a photo), "reply" (a quote of block [ref], shown above what
@@ -232,38 +235,40 @@ object Store {
 
 /** The backend authenticates requests, stores blocks in Postgres and calls the model. */
 object Backend {
-    /** Doesn't connect yet, so it's safe on the main thread; [auth] before using it. */
+    /** Doesn't connect yet, so it's safe on the main thread; [sign] before using it. */
     private fun open(path: String, readTimeout: Int = 15_000) =
         (URL("https://coffee.aswinharidas.uk/v1/$path").openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             this.readTimeout = readTimeout
         }
 
-    /** Blocking, as the token may need refreshing; call off the main thread. */
-    private fun HttpURLConnection.auth() = apply { setRequestProperty("Authorization", "Bearer ${Lock.token}") }
+    /**
+     * Signs the request with the key this build shares with the server, which answers nothing else: the HMAC-SHA256 of
+     * "time\nMETHOD\n/path?query\nhex(sha256(body))". Set the method first.
+     */
+    private fun HttpURLConnection.sign(body: ByteArray = ByteArray(0)) = apply {
+        val ts = (System.currentTimeMillis() / 1000).toString()
+        val hash = MessageDigest.getInstance("SHA-256").digest(body).joinToString("") { "%02x".format(it) }
+        val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(BuildConfig.APP_KEY.toByteArray(), "HmacSHA256")) }
+        val sig = mac.doFinal("$ts\n$requestMethod\n${url.file}\n$hash".toByteArray())
+        setRequestProperty("X-Coffee-Time", ts)
+        setRequestProperty("X-Coffee-Sig", Base64.encodeToString(sig, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP))
+    }
 
     /** Blocking; call off the main thread. POSTs [body] as JSON and throws with the server's message unless it's a 2xx. */
     private fun HttpURLConnection.post(body: JSONObject) {
+        val bytes = body.toString().toByteArray()
         requestMethod = "POST"
         doOutput = true
         setRequestProperty("Content-Type", "application/json")
-        outputStream.use { it.write(body.toString().toByteArray()) }
+        sign(bytes)
+        outputStream.use { it.write(bytes) }
         if (responseCode !in 200..299) throw IOException(errorOf(errorStream?.bufferedReader()?.readText(), responseCode))
-    }
-
-    /** Blocking; call off the main thread. The server's answer to the current token: 200 when it's the owner's, 401 when not. */
-    fun check(): Int {
-        val conn = open("blocks?limit=1").auth()
-        try {
-            return conn.responseCode
-        } finally {
-            conn.disconnect()
-        }
     }
 
     /** Blocking; call off the main thread. A page of blocks for [query] (before=, after=, limit=) and whether there are more that way. */
     fun blocks(query: String): Pair<List<Block>, Boolean> {
-        val conn = open("blocks?$query").auth()
+        val conn = open("blocks?$query").sign()
         try {
             if (conn.responseCode !in 200..299) throw IOException("blocks: HTTP ${conn.responseCode}")
             val o = JSONObject(conn.inputStream.bufferedReader().readText())
@@ -275,7 +280,7 @@ object Backend {
 
     /** Blocking; call off the main thread. Saves an image block's photo to [to]; throws on failure. */
     fun image(id: Long, to: File) {
-        val conn = open("blocks/$id/image", 30_000).auth()
+        val conn = open("blocks/$id/image", 30_000).sign()
         try {
             if (conn.responseCode !in 200..299) throw IOException("image: HTTP ${conn.responseCode}")
             val part = File(to.path + ".part")
@@ -288,7 +293,7 @@ object Backend {
 
     /** Blocking; call off the main thread. Stores blocks as they are, times and roles included; throws on failure. */
     fun import(blocks: List<Block>) {
-        val conn = open("blocks", 60_000).auth()
+        val conn = open("blocks", 60_000)
         try {
             conn.post(JSONObject().put("blocks", JSONArray(blocks.map(::outgoing))))
         } finally {
@@ -311,7 +316,7 @@ object Backend {
         val conn = open("chat", 600_000)
         launch(Dispatchers.IO) {
             try {
-                conn.auth().post(JSONObject().put("system", system).put("blocks", JSONArray(blocks.map(::outgoing))).put("redo", redo))
+                conn.post(JSONObject().put("system", system).put("blocks", JSONArray(blocks.map(::outgoing))).put("redo", redo))
                 conn.inputStream.bufferedReader().useLines { lines ->
                     for (line in lines) {
                         if (!line.startsWith("data: ")) continue // blank separators
@@ -333,7 +338,7 @@ object Backend {
     private fun errorOf(body: String?, code: Int): String {
         val msg = runCatching { JSONObject(body!!).getJSONObject("error").getString("message") }.getOrNull()
         return when (code) {
-            401 -> "Signed out. Reopen Coffee and sign in."
+            401 -> "The server refused this app. Check the phone's clock, or that the app and server share the same key."
             429 -> "Rate limited. Try again in a moment."
             else -> "API error${if (code > 0) " $code" else ""}: ${msg ?: body ?: "unknown"}"
         }
